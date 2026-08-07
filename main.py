@@ -24,11 +24,15 @@ class BotStates(StatesGroup):
     waiting_for_goal = State()
     waiting_for_activity = State()
     waiting_for_menu_ingredients = State()
+    waiting_for_extra_permission = State()
 
 main_menu = ReplyKeyboardMarkup(
-    keyboard=[[KeyboardButton(text="🍎 Составить меню")]],
+    keyboard=[
+        [KeyboardButton(text="🍎 Составить меню")],
+        [KeyboardButton(text="❌ Сбросить шаг / Начать заново")]
+    ],
     resize_keyboard=True,
-    input_field_placeholder="Отправь фото еды или нажми кнопку..."
+    input_field_placeholder="Отправь фото или выбери действие..."
 )
 
 status_keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -50,25 +54,29 @@ activity_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="🏃 Высокая (спорт 3+ раз в неделю)", callback_data="act_high")]
 ])
 
-# --- ТУТ МЫ ПОЛНОСТЬЮ ПЕРЕПИСАЛИ ПРОМПТ ---
+extra_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+    [InlineKeyboardButton(text="🧑‍🍳 Добавь базу (масло, лук, специи)", callback_data="extra_yes")],
+    [InlineKeyboardButton(text="🛑 СТРОГО только из моего списка", callback_data="extra_no")]
+])
+
+# --- ОБНОВИЛИ ПРОМПТ ДЛЯ УЛУЧШЕНИЯ ЗРЕНИЯ ---
 SYSTEM_PROMPT = """Ты — профессиональный шеф-повар и точный ИИ-нутрициолог. 
 
 ЕСЛИ СЧИТАЕШЬ ФОТО: 
-Учитывай уварку круп (в 3 раза тяжелее) и ужарку мяса (теряет 25%). Пиши список продуктов, вес и КБЖУ.
+1. Распознавай еду ГДЕ УГОДНО: в тарелке, в сковороде, кастрюле, контейнере или упаковке.
+2. Сначала напиши, что ты видишь (например: "На фото целая сковорода с макаронами и фаршем").
+3. Оцени примерный вес ВСЕЙ еды на фото.
+4. Учитывай уварку круп (в 3 раза тяжелее) и ужарку мяса (теряет 25%). Напиши список продуктов, вес и итоговое КБЖУ.
 
 ЕСЛИ ПИШЕШЬ МЕНЮ: 
-Пользователь даст параметры, цель, активность и список продуктов (например, "фарш").
+Пользователь даст параметры, цель, активность и список продуктов.
 Твои строгие правила:
-1. РАСЧЕТ НОРМЫ: Один раз рассчитай калории по Миффлину-Сан Жеору. Для похудения сделай дефицит ровно 20%, для набора профицит ровно 15%. Напиши ЭТУ ОДНУ ЦИФРУ в начале и больше не пересчитывай!
-2. БЛЮДА, А НЕ ПРОДУКТЫ: Никогда не предлагай есть просто "фарш" или "яйцо". Превращай их в БЛЮДА (например, "Домашние котлеты из фарша с гарниром" или "Омлет с овощами"). 
-3. ФОРМАТ ОТВЕТА ДЛЯ КАЖДОГО ПРИЕМА ПИЩИ:
-   - Название блюда
-   - Ингредиенты в граммах (строго подгоняй под норму калорий)
-   - Краткий пошаговый рецепт (как готовить)
-   - КБЖУ именно этого блюда
-4. Обязательно впиши вкусняшку, если ее попросили.
+1. РАСЧЕТ НОРМЫ: Один раз рассчитай калории по Миффлину-Сан Жеору. Для похудения дефицит 20%, для набора профицит 15%. Напиши ЭТУ ЦИФРУ в начале.
+2. БЛЮДА: Превращай продукты в полноценные блюда.
+3. ФОРМАТ: Название блюда, Ингредиенты в граммах, Краткий рецепт, КБЖУ блюда.
+4. ВКУСНЯШКА: Обязательно впиши вкусняшку, если просили.
+5. ДОБАВОЧНЫЕ ПРОДУКТЫ: Если пользователь просит готовить СТРОГО из его списка — не добавляй масло, соль и овощи. Если разрешает базу — смело добавляй для зажарки и вкуса.
 Итоговая сумма калорий всех блюд должна строго совпадать с твоим расчетом из пункта 1."""
-# -------------------------------------------
 
 async def ask_ai(image_base64=None, text_prompt=None, context=""):
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -76,7 +84,8 @@ async def ask_ai(image_base64=None, text_prompt=None, context=""):
         messages.append({
             "role": "user",
             "content": [
-                {"type": "text", "text": f"Контекст: {context}. Оцени КБЖУ этой тарелки."},
+                # --- Убрали слово "тарелка" ---
+                {"type": "text", "text": f"Контекст: {context}. Внимательно изучи еду на фото, оцени её примерный вес и рассчитай КБЖУ."},
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}
             ]
         })
@@ -84,16 +93,24 @@ async def ask_ai(image_base64=None, text_prompt=None, context=""):
         messages.append({"role": "user", "content": f"Запрос на меню: {text_prompt}"})
 
     response = await client.chat.completions.create(
-        model="gpt-4o", messages=messages, temperature=0.3 # Чуть снизили температуру для точной математики
+        model="gpt-4o", messages=messages, temperature=0.3 
     )
     return response.choices[0].message.content
 
+
 @dp.message(CommandStart())
-async def cmd_start(message: Message):
-    await message.answer("Привет! 👋\n\nПришли мне фото еды, чтобы узнать КБЖУ, или нажми кнопку внизу, чтобы составить рацион из того, что есть в холодильнике!", reply_markup=main_menu)
+async def cmd_start(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("Привет! 👋\n\nПришли мне фото еды (в тарелке или прямо в сковородке), чтобы узнать КБЖУ, или нажми кнопку внизу, чтобы составить меню!", reply_markup=main_menu)
+
+@dp.message(F.text == "❌ Сбросить шаг / Начать заново")
+async def cancel_action(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("🔄 Все текущие действия отменены. Можешь отправить новое фото еды или начать составление меню заново!", reply_markup=main_menu)
 
 @dp.message(F.photo)
 async def handle_photo(message: Message, state: FSMContext):
+    await state.clear()
     photo_id = message.photo[-1].file_id
     file = await bot.get_file(photo_id)
     downloaded_file = await bot.download_file(file.file_path)
@@ -105,7 +122,7 @@ async def handle_photo(message: Message, state: FSMContext):
 @dp.callback_query(BotStates.waiting_for_status, F.data.in_(["status_raw", "status_cooked"]))
 async def process_photo_status(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_reply_markup(reply_markup=None)
-    await callback.message.edit_text("⏳ Считаю калории с учетом твоего выбора...")
+    await callback.message.edit_text("⏳ Изучаю фото и считаю калории...")
     user_data = await state.get_data()
     image_base64 = user_data.get("saved_photo")
     status_text = "ЭТО СЫРЫЕ ПРОДУКТЫ ДО ГОТОВКИ" if callback.data == "status_raw" else "ЭТО УЖЕ ГОТОВОЕ БЛЮДО"
@@ -143,23 +160,42 @@ async def process_activity(callback: CallbackQuery, state: FSMContext):
     activities = {"act_low": "Низкая", "act_med": "Средняя", "act_high": "Высокая"}
     selected_activity = activities[callback.data]
     await state.update_data(user_activity=selected_activity)
-    await callback.message.answer(f"Активность: {selected_activity}. 📝\n\nФинальный шаг: напиши, какие продукты у тебя есть и какую вкусняшку вписать в рацион?")
+    await callback.message.answer(f"Активность: {selected_activity}. 📝\n\nНапиши, какие продукты у тебя есть и какую вкусняшку вписать в рацион?")
     await state.set_state(BotStates.waiting_for_menu_ingredients)
 
 @dp.message(BotStates.waiting_for_menu_ingredients)
-async def process_menu_generation(message: Message, state: FSMContext):
-    msg = await message.answer("🍳 Считаю точную норму и придумываю вкусное меню...")
+async def process_menu_ingredients(message: Message, state: FSMContext):
+    await state.update_data(user_ingredients=message.text)
+    await message.answer(
+        "Отлично! Последний вопрос 🧑‍🍳:\n\n"
+        "Мне использовать **строго** только эти продукты, или я могу добавить базовые ингредиенты из «виртуального холодильника» (масло, соль, лук, морковь), чтобы блюдо получилось вкуснее?",
+        reply_markup=extra_keyboard
+    )
+    await state.set_state(BotStates.waiting_for_extra_permission)
+
+@dp.callback_query(BotStates.waiting_for_extra_permission, F.data.startswith("extra_"))
+async def process_extra_permission(callback: CallbackQuery, state: FSMContext):
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await callback.message.edit_text("🍳 Считаю точную норму и придумываю меню...")
+    
     user_data = await state.get_data()
     params = user_data.get("user_params")
     goal = user_data.get("user_goal")
     activity = user_data.get("user_activity")
-    ingredients = message.text
-    full_prompt = f"Параметры: {params}. Цель: {goal}. Активность: {activity}. Продукты: {ingredients}."
+    ingredients = user_data.get("user_ingredients")
+    
+    if callback.data == "extra_yes":
+        extra_instruction = "РАЗРЕШЕНО добавлять базовые продукты (масло, специи, овощи для вкуса)."
+    else:
+        extra_instruction = "СТРОГО ЗАПРЕЩЕНО добавлять любые продукты, которых нет в списке. Готовь только из того, что перечислено."
+        
+    full_prompt = f"Параметры: {params}. Цель: {goal}. Активность: {activity}. Продукты: {ingredients}. Указание: {extra_instruction}"
+    
     try:
         ai_response = await ask_ai(text_prompt=full_prompt)
-        await msg.edit_text(ai_response)
+        await callback.message.edit_text(ai_response)
     except Exception as e:
-        await msg.edit_text(f"Ошибка ИИ: {e}")
+        await callback.message.edit_text(f"Ошибка ИИ: {e}")
     finally:
         await state.clear()
 
