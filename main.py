@@ -59,7 +59,6 @@ extra_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="🛑 СТРОГО только из моего списка", callback_data="extra_no")]
 ])
 
-# --- ПРОМПТ С НОВЫМИ ПРАВИЛАМИ ДЛЯ ФОТО ---
 SYSTEM_PROMPT = """Ты — профессиональный шеф-повар и точный ИИ-нутрициолог. 
 
 ЕСЛИ СЧИТАЕШЬ ФОТО: 
@@ -95,18 +94,27 @@ async def ask_ai(image_base64=None, text_prompt=None, context=""):
     )
     return response.choices[0].message.content
 
-
+# --- ОБНОВИЛИ ПРИВЕТСТВИЕ ДЛЯ ПОЛЬЗОВАТЕЛЕЙ ---
 @dp.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
-    await message.answer("Привет! 👋\n\nПришли мне фото еды (можно добавить подпись с весом), чтобы узнать КБЖУ, или нажми кнопку внизу, чтобы составить меню!", reply_markup=main_menu)
+    welcome_text = (
+        "Привет! 👋\n\n"
+        "Я твой ИИ-нутрициолог. Отправь мне **фото еды**, чтобы узнать её КБЖУ, или нажми кнопку внизу, чтобы составить меню!\n\n"
+        "💡 **СЕКРЕТ ТОЧНОГО РАСЧЕТА ПО ФОТО:**\n"
+        "Камера искажает размеры, поэтому помоги мне понять масштаб:\n"
+        "• *Идеально:* Напиши точный вес в подписи к фото (например, «300г»).\n"
+        "• *Хорошо:* Напиши размер посуды в подписи («сковорода 28см»).\n"
+        "• *Лайфхак:* Просто положи в кадр **вилку, ложку или свою руку**, чтобы я понял реальный размер порции в сравнении!"
+    )
+    await message.answer(welcome_text, reply_markup=main_menu)
 
+# --- ОБНОВИЛИ ТЕКСТ СБРОСА ---
 @dp.message(F.text == "❌ Сбросить шаг / Начать заново")
 async def cancel_action(message: Message, state: FSMContext):
     await state.clear()
-    await message.answer("🔄 Все текущие действия отменены. Можешь отправить новое фото еды или начать составление меню заново!", reply_markup=main_menu)
+    await message.answer("🔄 Все действия отменены.\n\nОтправь новое фото еды (не забудь положить в кадр ложку/вилку для масштаба или написать вес!) или начни составление меню заново.", reply_markup=main_menu)
 
-# --- ИЗМЕНЕНИЯ ЗДЕСЬ: ЗАХВАТЫВАЕМ ТЕКСТ ПОДПИСИ К ФОТО ---
 @dp.message(F.photo)
 async def handle_photo(message: Message, state: FSMContext):
     await state.clear()
@@ -115,7 +123,6 @@ async def handle_photo(message: Message, state: FSMContext):
     downloaded_file = await bot.download_file(file.file_path)
     image_base64 = base64.b64encode(downloaded_file.read()).decode('utf-8')
     
-    # Сохраняем в память и фото, и текст под ним (если текста нет - будет пустая строка)
     photo_caption = message.caption or ""
     await state.update_data(saved_photo=image_base64, photo_caption=photo_caption)
     
@@ -129,11 +136,10 @@ async def process_photo_status(callback: CallbackQuery, state: FSMContext):
     
     user_data = await state.get_data()
     image_base64 = user_data.get("saved_photo")
-    photo_caption = user_data.get("photo_caption", "") # Достаем подпись из памяти
+    photo_caption = user_data.get("photo_caption", "")
     
     status_text = "ЭТО СЫРЫЕ ПРОДУКТЫ ДО ГОТОВКИ" if callback.data == "status_raw" else "ЭТО УЖЕ ГОТОВОЕ БЛЮДО"
     
-    # Если была подпись, добавляем её к инструкции для ИИ
     if photo_caption:
         status_text += f". Комментарий пользователя к фото: {photo_caption}"
         
