@@ -59,24 +59,23 @@ extra_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="🛑 СТРОГО только из моего списка", callback_data="extra_no")]
 ])
 
-# --- ОБНОВИЛИ ПРОМПТ ДЛЯ УЛУЧШЕНИЯ ЗРЕНИЯ ---
+# --- ПРОМПТ С НОВЫМИ ПРАВИЛАМИ ДЛЯ ФОТО ---
 SYSTEM_PROMPT = """Ты — профессиональный шеф-повар и точный ИИ-нутрициолог. 
 
 ЕСЛИ СЧИТАЕШЬ ФОТО: 
-1. Распознавай еду ГДЕ УГОДНО: в тарелке, в сковороде, кастрюле, контейнере или упаковке.
-2. Сначала напиши, что ты видишь (например: "На фото целая сковорода с макаронами и фаршем").
-3. Оцени примерный вес ВСЕЙ еды на фото.
-4. Учитывай уварку круп (в 3 раза тяжелее) и ужарку мяса (теряет 25%). Напиши список продуктов, вес и итоговое КБЖУ.
+1. Внимательно читай "Комментарий пользователя к фото". Если человек сам написал вес (например, "300г фарша", "сковорода 28см") — ВЕРЬ ЧЕЛОВЕКУ БЕЗОГОВОРОЧНО и строй расчеты строго на его цифрах!
+2. Если человек не указал вес, ищи на фото предметы для масштаба (вилка, рука, край стола, размер конфорки), чтобы понять реальный размер.
+3. Если масштаб неясен (еда снята слишком близко) — БУДЬ КОНСЕРВАТИВЕН, не завышай вес! Считай порции как в стандартном ресторане (гарнир ~150-200г, мясо ~120-150г).
+4. Напиши, что видишь, укажи итоговый вес и рассчитай КБЖУ с учетом уварки/ужарки (крупы в 3 раза тяжелее, мясо теряет 25%).
 
 ЕСЛИ ПИШЕШЬ МЕНЮ: 
 Пользователь даст параметры, цель, активность и список продуктов.
-Твои строгие правила:
-1. РАСЧЕТ НОРМЫ: Один раз рассчитай калории по Миффлину-Сан Жеору. Для похудения дефицит 20%, для набора профицит 15%. Напиши ЭТУ ЦИФРУ в начале.
+1. РАСЧЕТ НОРМЫ: Рассчитай калории по Миффлину-Сан Жеору. Похудение = дефицит 20%, набор = профицит 15%. Напиши ЭТУ ЦИФРУ в начале.
 2. БЛЮДА: Превращай продукты в полноценные блюда.
 3. ФОРМАТ: Название блюда, Ингредиенты в граммах, Краткий рецепт, КБЖУ блюда.
 4. ВКУСНЯШКА: Обязательно впиши вкусняшку, если просили.
-5. ДОБАВОЧНЫЕ ПРОДУКТЫ: Если пользователь просит готовить СТРОГО из его списка — не добавляй масло, соль и овощи. Если разрешает базу — смело добавляй для зажарки и вкуса.
-Итоговая сумма калорий всех блюд должна строго совпадать с твоим расчетом из пункта 1."""
+5. ДОБАВОЧНЫЕ ПРОДУКТЫ: Если человек просит готовить СТРОГО из его списка — не добавляй масло, соль и овощи. Если разрешает базу — добавляй.
+Итоговая сумма калорий должна строго совпадать с твоим расчетом из пункта 1."""
 
 async def ask_ai(image_base64=None, text_prompt=None, context=""):
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -84,8 +83,7 @@ async def ask_ai(image_base64=None, text_prompt=None, context=""):
         messages.append({
             "role": "user",
             "content": [
-                # --- Убрали слово "тарелка" ---
-                {"type": "text", "text": f"Контекст: {context}. Внимательно изучи еду на фото, оцени её примерный вес и рассчитай КБЖУ."},
+                {"type": "text", "text": f"Контекст: {context}. Изучи еду на фото, оцени её вес (учитывая комментарий, если он есть) и рассчитай КБЖУ."},
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}
             ]
         })
@@ -101,13 +99,14 @@ async def ask_ai(image_base64=None, text_prompt=None, context=""):
 @dp.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
-    await message.answer("Привет! 👋\n\nПришли мне фото еды (в тарелке или прямо в сковородке), чтобы узнать КБЖУ, или нажми кнопку внизу, чтобы составить меню!", reply_markup=main_menu)
+    await message.answer("Привет! 👋\n\nПришли мне фото еды (можно добавить подпись с весом), чтобы узнать КБЖУ, или нажми кнопку внизу, чтобы составить меню!", reply_markup=main_menu)
 
 @dp.message(F.text == "❌ Сбросить шаг / Начать заново")
 async def cancel_action(message: Message, state: FSMContext):
     await state.clear()
     await message.answer("🔄 Все текущие действия отменены. Можешь отправить новое фото еды или начать составление меню заново!", reply_markup=main_menu)
 
+# --- ИЗМЕНЕНИЯ ЗДЕСЬ: ЗАХВАТЫВАЕМ ТЕКСТ ПОДПИСИ К ФОТО ---
 @dp.message(F.photo)
 async def handle_photo(message: Message, state: FSMContext):
     await state.clear()
@@ -115,7 +114,11 @@ async def handle_photo(message: Message, state: FSMContext):
     file = await bot.get_file(photo_id)
     downloaded_file = await bot.download_file(file.file_path)
     image_base64 = base64.b64encode(downloaded_file.read()).decode('utf-8')
-    await state.update_data(saved_photo=image_base64)
+    
+    # Сохраняем в память и фото, и текст под ним (если текста нет - будет пустая строка)
+    photo_caption = message.caption or ""
+    await state.update_data(saved_photo=image_base64, photo_caption=photo_caption)
+    
     await state.set_state(BotStates.waiting_for_status)
     await message.answer("Супер! Уточни только один момент:", reply_markup=status_keyboard)
 
@@ -123,9 +126,17 @@ async def handle_photo(message: Message, state: FSMContext):
 async def process_photo_status(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_reply_markup(reply_markup=None)
     await callback.message.edit_text("⏳ Изучаю фото и считаю калории...")
+    
     user_data = await state.get_data()
     image_base64 = user_data.get("saved_photo")
+    photo_caption = user_data.get("photo_caption", "") # Достаем подпись из памяти
+    
     status_text = "ЭТО СЫРЫЕ ПРОДУКТЫ ДО ГОТОВКИ" if callback.data == "status_raw" else "ЭТО УЖЕ ГОТОВОЕ БЛЮДО"
+    
+    # Если была подпись, добавляем её к инструкции для ИИ
+    if photo_caption:
+        status_text += f". Комментарий пользователя к фото: {photo_caption}"
+        
     try:
         ai_response = await ask_ai(image_base64=image_base64, context=status_text)
         await callback.message.edit_text(ai_response)
