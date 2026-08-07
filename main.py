@@ -18,11 +18,15 @@ client = AsyncOpenAI(api_key=os.getenv('AI_API_KEY'), base_url=os.getenv('AI_BAS
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
+# --- 1. ДОБАВЛЯЕМ НОВЫЕ ШАГИ В ПАМЯТЬ БОТА ---
 class BotStates(StatesGroup):
     waiting_for_status = State()
     waiting_for_user_params = State()
+    waiting_for_goal = State()             # НОВЫЙ ШАГ: Ждем выбор цели
+    waiting_for_activity = State()         # НОВЫЙ ШАГ: Ждем выбор активности
     waiting_for_menu_ingredients = State()
 
+# --- 2. КЛАВИАТУРЫ ---
 main_menu = ReplyKeyboardMarkup(
     keyboard=[[KeyboardButton(text="🍎 Составить меню")]],
     resize_keyboard=True,
@@ -36,11 +40,26 @@ status_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     ]
 ])
 
+# Новая клавиатура для Цели
+goal_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+    [InlineKeyboardButton(text="📉 Похудение", callback_data="goal_loss")],
+    [InlineKeyboardButton(text="⚖️ Поддержание веса", callback_data="goal_maintain")],
+    [InlineKeyboardButton(text="📈 Набор массы", callback_data="goal_gain")]
+])
+
+# Новая клавиатура для Активности
+activity_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+    [InlineKeyboardButton(text="🛋 Низкая (сидячая работа, мало шагов)", callback_data="act_low")],
+    [InlineKeyboardButton(text="🚶 Средняя (1-3 легких тренировки)", callback_data="act_med")],
+    [InlineKeyboardButton(text="🏃 Высокая (спорт 3+ раз в неделю)", callback_data="act_high")]
+])
+
+# --- 3. ОБНОВЛЕННЫЙ ПРОМПТ ---
 SYSTEM_PROMPT = """Ты — точный и эмпатичный ИИ-нутрициолог. 
 ЕСЛИ СЧИТАЕШЬ ФОТО: Тебе передадут статус (Сырое/Готовое). Учитывай уварку/ужарку (крупы тяжелеют в 3 раза, мясо теряет 20-30%). Выдавай список продуктов с весом и ИТОГО КБЖУ.
-ЕСЛИ ПИШЕШЬ МЕНЮ: Пользователь передаст свои параметры (вес, рост, возраст) и список продуктов. 
-1. Сначала рассчитай его суточную норму калорий.
-2. Затем составь меню на эту норму из указанных продуктов (рецепты до 15 мин). 
+ЕСЛИ ПИШЕШЬ МЕНЮ: Пользователь передаст базовые параметры (вес, рост, возраст), ЦЕЛЬ и УРОВЕНЬ АКТИВНОСТИ. 
+1. Рассчитай суточную норму калорий по формуле Миффлина-Сан Жеора, умножь на коэффициент активности и учти цель (дефицит/профицит). Обязательно напиши эту цифру пользователю!
+2. Составь меню на эту норму из указанных продуктов. 
 3. Если просят вписать сладости — вписывай. Пиши граммовки и итоговое КБЖУ."""
 
 async def ask_ai(image_base64=None, text_prompt=None, context=""):
@@ -54,13 +73,14 @@ async def ask_ai(image_base64=None, text_prompt=None, context=""):
             ]
         })
     elif text_prompt:
-        messages.append({"role": "user", "content": f"Запрос: {text_prompt}"})
+        messages.append({"role": "user", "content": f"Запрос на меню: {text_prompt}"})
 
     response = await client.chat.completions.create(
         model="gpt-4o", messages=messages, temperature=0.4 
     )
     return response.choices[0].message.content
 
+# --- ЛОГИКА ФОТО ---
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
     await message.answer("Привет! 👋\n\nПришли мне фото еды, чтобы узнать КБЖУ, или нажми кнопку внизу, чтобы составить рацион из того, что есть в холодильнике!", reply_markup=main_menu)
@@ -90,24 +110,57 @@ async def process_photo_status(callback: CallbackQuery, state: FSMContext):
     finally:
         await state.clear()
 
+# --- ЛОГИКА МЕНЮ ---
 @dp.message(F.text == "🍎 Составить меню")
 async def handle_menu_btn(message: Message, state: FSMContext):
-    await message.answer("Отличная идея! 🍲\n\nЧтобы я подобрал идеальные порции, мне нужно знать твою норму калорий. Напиши свой **вес, рост и возраст**.")
+    await message.answer("Отличная идея! 🍲\n\nНапиши свои базовые параметры: **вес, рост и возраст** (например: 65, 170, 25).")
     await state.set_state(BotStates.waiting_for_user_params)
 
+# Шаг 1: Получили параметры -> Спрашиваем Цель
 @dp.message(BotStates.waiting_for_user_params)
 async def process_user_params(message: Message, state: FSMContext):
     await state.update_data(user_params=message.text)
-    await message.answer("Принято! 📝\n\nА теперь напиши, какие продукты у тебя есть в холодильнике? И какую вкусняшку мне обязательно вписать в рацион?")
+    await message.answer("Принято! 🎯 Теперь выбери свою цель:", reply_markup=goal_keyboard)
+    await state.set_state(BotStates.waiting_for_goal)
+
+# Шаг 2: Получили Цель -> Спрашиваем Активность
+@dp.callback_query(BotStates.waiting_for_goal, F.data.startswith("goal_"))
+async def process_goal(callback: CallbackQuery, state: FSMContext):
+    await callback.message.edit_reply_markup(reply_markup=None) # Убираем кнопки
+    
+    # Переводим технический код в понятный текст для ИИ
+    goals = {"goal_loss": "Похудение", "goal_maintain": "Поддержание", "goal_gain": "Набор массы"}
+    selected_goal = goals[callback.data]
+    
+    await state.update_data(user_goal=selected_goal)
+    await callback.message.answer(f"Цель: {selected_goal}. 🏃‍♀️ Оцени свой уровень активности:", reply_markup=activity_keyboard)
+    await state.set_state(BotStates.waiting_for_activity)
+
+# Шаг 3: Получили Активность -> Спрашиваем продукты
+@dp.callback_query(BotStates.waiting_for_activity, F.data.startswith("act_"))
+async def process_activity(callback: CallbackQuery, state: FSMContext):
+    await callback.message.edit_reply_markup(reply_markup=None)
+    
+    activities = {"act_low": "Низкая", "act_med": "Средняя", "act_high": "Высокая"}
+    selected_activity = activities[callback.data]
+    
+    await state.update_data(user_activity=selected_activity)
+    await callback.message.answer(f"Активность: {selected_activity}. 📝\n\nФинальный шаг: напиши, какие продукты у тебя есть и какую вкусняшку вписать в рацион?")
     await state.set_state(BotStates.waiting_for_menu_ingredients)
 
+# Шаг 4: Генерируем меню
 @dp.message(BotStates.waiting_for_menu_ingredients)
 async def process_menu_generation(message: Message, state: FSMContext):
-    msg = await message.answer("🍳 Считаю норму и придумываю вкусное меню...")
+    msg = await message.answer("🍳 Считаю точную норму и придумываю вкусное меню...")
+    
     user_data = await state.get_data()
     params = user_data.get("user_params")
+    goal = user_data.get("user_goal")
+    activity = user_data.get("user_activity")
     ingredients = message.text
-    full_prompt = f"Параметры пользователя: {params}. Продукты и пожелания: {ingredients}. Рассчитай норму и составь меню."
+    
+    full_prompt = f"Параметры: {params}. Цель: {goal}. Активность: {activity}. Продукты: {ingredients}."
+    
     try:
         ai_response = await ask_ai(text_prompt=full_prompt)
         await msg.edit_text(ai_response)
@@ -121,7 +174,6 @@ async def health_check(request):
     return web.Response(text="Bot is running!")
 
 async def main():
-    # Запускаем сайт-обманку
     app = web.Application()
     app.router.add_get('/', health_check)
     runner = web.AppRunner(app)
@@ -130,7 +182,6 @@ async def main():
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
     
-    # Запускаем бота
     print("Бот запущен на сервере!")
     await dp.start_polling(bot)
 
