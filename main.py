@@ -128,17 +128,24 @@ async def show_diary(message: Message):
         return
     
     meals = doc.to_dict().get('meals', [])
-    msg = await message.answer("📊 Собираю данные из базы...")
+    msg = await message.answer("📊 Достаю записи из базы и считаю итоги...")
     
     diary_text = "\n\n---\n".join(meals)
-    prompt = f"Записи за сегодня:\n{diary_text}\n\nКратко перечисли, что съедено, и выведи жирным шрифтом ИТОГОВУЮ СУММУ КБЖУ за день."
+    
+    # --- ПРОКАЧАННАЯ ИНСТРУКЦИЯ ДЛЯ НЕЙРОСЕТИ ---
+    prompt = f"""Вот список всего, что я съел(а) за сегодня:
+{diary_text}
+
+Сделай красивый и понятный отчет:
+1. Кратко перечисли всё съеденное (списком).
+2. Посчитай ИТОГОВУЮ СУММУ КБЖУ за день (выведи жирным).
+3. МОЯ НОРМА: 1600 ккал. Сравни сумму с моей нормой и напиши, сколько калорий мне еще осталось съесть сегодня (или на сколько я превысил(а) лимит)."""
     
     try:
         ai_response = await ask_ai(text_prompt=prompt)
         await msg.edit_text(ai_response)
     except Exception as e:
         await msg.edit_text("Произошла ошибка при анализе дневника.")
-
 @dp.callback_query(F.data == "save_to_diary")
 async def save_to_diary(callback: CallbackQuery, state: FSMContext):
     if not db:
