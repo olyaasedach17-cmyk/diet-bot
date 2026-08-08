@@ -138,12 +138,26 @@ async def cmd_start(message: Message, state: FSMContext):
         await message.answer("Привет! 👋 Давай настроим твой профиль, чтобы я мог точно считать калории.\n\nУкажи свой пол:", reply_markup=gender_kb)
         await state.set_state(ProfileStates.gender)
 
-@dp.callback_query(ProfileStates.gender, F.data.startswith("gender_"))
-async def ask_age(callback: CallbackQuery, state: FSMContext):
-    gender = callback.data.split("_")[1]
-    await state.update_data(gender=gender)
-    await callback.message.edit_text("Отлично! Напиши свой возраст (цифрой, например: 25):")
-    await state.set_state(ProfileStates.age)
+@dp.callback_query(F.data == "save_to_diary")
+async def save_to_diary(callback: CallbackQuery, state: FSMContext):
+    user_id = callback.from_user.id
+    data = await state.get_data()
+    last_response = data.get("last_ai_response")
+    
+    if not last_response:
+        return await callback.answer("Нечего сохранять!", show_alert=True)
+
+    # ДОБАВЛЯЕМ ВРЕМЯ К ЗАПИСИ, ЧТОБЫ ОНА БЫЛА УНИКАЛЬНОЙ
+    current_time = datetime.now().strftime("%H:%M:%S")
+    unique_record = f"⏰ Время записи: {current_time}\n{last_response}"
+
+    db.collection('diaries').document(get_today_doc_id(user_id)).set({
+        'meals': firestore.ArrayUnion([unique_record])
+    }, merge=True)
+    
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await callback.message.answer("✅ Блюдо записано в дневник!")
+    await callback.answer()
 
 @dp.message(ProfileStates.age)
 async def ask_height(message: Message, state: FSMContext):
