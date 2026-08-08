@@ -333,3 +333,49 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+    # --- ЛОГИКА СОСТАВЛЕНИЯ МЕНЮ ---
+@dp.message(F.text == "🍎 Составить меню")
+async def start_menu_generation(message: Message, state: FSMContext):
+    user_id = str(message.from_user.id)
+    doc = db.collection('users').document(user_id).get()
+    
+    if not doc.exists:
+        return await message.answer("Сначала заполни профиль (нажми /start), чтобы я знал твою норму калорий!")
+
+    await message.answer("📝 Напиши список продуктов, которые у тебя сейчас есть (например: курица, гречка, яйца, помидоры):")
+    await state.set_state(BotStates.waiting_for_menu_ingredients)
+
+@dp.message(BotStates.waiting_for_menu_ingredients)
+async def process_menu_ingredients(message: Message, state: FSMContext):
+    await state.update_data(user_ingredients=message.text)
+    await message.answer("Можно добавить базовые продукты (масло, специи, лук)?", reply_markup=extra_keyboard)
+    await state.set_state(BotStates.waiting_for_extra_permission)
+
+@dp.callback_query(BotStates.waiting_for_extra_permission, F.data.startswith("extra_"))
+async def process_extra_permission(callback: CallbackQuery, state: FSMContext):
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await callback.message.edit_text("🍳 Придумываю рецепт и считаю граммовки...")
+    
+    user_id = str(callback.from_user.id)
+    user_data = db.collection('users').document(user_id).get().to_dict()
+    state_data = await state.get_data()
+    
+    extra = "РАЗРЕШЕНО добавлять базу (масло, специи, лук и т.д.)." if callback.data == "extra_yes" else "СТРОГО ЗАПРЕЩЕНО добавлять чужие ингредиенты, только из моего списка."
+    
+    # Формируем умный запрос, используя норму из профиля
+    prompt = f"""Составь меню на один прием пищи (завтрак, обед или ужин).
+    Параметры человека: цель {user_data['goal']}, активность {user_data['activity']}. 
+    Дневная норма калорий: {user_data['norm']} ккал.
+    
+    Ингредиенты: {state_data.get('user_ingredients')}.
+    {extra}
+    
+    Напиши рецепт, укажи точные граммовки продуктов так, чтобы калорийность блюда составляла примерно 25-35% от дневной нормы ({user_data['norm']} ккал). В конце выведи итоговое КБЖУ блюда."""
+    
+    try:
+        ai_response = await ask_ai(text_prompt=prompt)
+        await callback.message.edit_text(ai_response)
+    except Exception:
+        await callback.message.edit_text("Произошла ошибка при составлении меню.")
+    finally:
+        await state.clear()
