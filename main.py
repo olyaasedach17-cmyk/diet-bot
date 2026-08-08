@@ -36,6 +36,7 @@ else:
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
+# --- СОСТОЯНИЯ БОТА ---
 class BotStates(StatesGroup):
     waiting_for_status = State()
     waiting_for_user_params = State()
@@ -44,20 +45,27 @@ class BotStates(StatesGroup):
     waiting_for_menu_ingredients = State()
     waiting_for_extra_permission = State()
 
+class ProfileStates(StatesGroup):
+    gender = State()
+    age = State()
+    height = State()
+    weight = State()
+    goal = State()
+    activity = State()
+    new_weight = State()
+
+# --- КЛАВИАТУРЫ ---
 main_menu = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="🍎 Составить меню"), KeyboardButton(text="📊 Мой дневник")],
-        [KeyboardButton(text="❌ Сбросить шаг / Начать заново")]
+        [KeyboardButton(text="👤 Мой профиль"), KeyboardButton(text="❌ Сбросить шаг")]
     ],
     resize_keyboard=True,
     input_field_placeholder="Выбери действие..."
 )
 
-status_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-    [
-        InlineKeyboardButton(text="🥩 Это сырые продукты", callback_data="status_raw"),
-        InlineKeyboardButton(text="🍳 Это готовое блюдо", callback_data="status_cooked")
-    ]
+gender_kb = InlineKeyboardMarkup(inline_keyboard=[
+    [InlineKeyboardButton(text="👨 Мужчина", callback_data="gender_M"), InlineKeyboardButton(text="👩 Женщина", callback_data="gender_F")]
 ])
 
 goal_keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -72,13 +80,17 @@ activity_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="🏃 Высокая (спорт 3+ раз)", callback_data="act_high")]
 ])
 
+status_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+    [InlineKeyboardButton(text="🥩 Сырые продукты", callback_data="status_raw"), InlineKeyboardButton(text="🍳 Готовое блюдо", callback_data="status_cooked")]
+])
+
 extra_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="🧑‍🍳 Добавь базу (масло, лук)", callback_data="extra_yes")],
     [InlineKeyboardButton(text="🛑 СТРОГО из моего списка", callback_data="extra_no")]
 ])
 
 SYSTEM_PROMPT = """Ты — ИИ-нутрициолог. 
-ЕСЛИ СЧИТАЕШЬ ФОТО: Верь пользователю, если он указал вес текстом. Ищи масштабы (вилки). Читай этикетки. Выдавай расчет четко и без лишней воды.
+ЕСЛИ СЧИТАЕШЬ ФОТО: Верь пользователю, если он указал вес текстом. Ищи масштабы. Выдавай расчет четко.
 ЕСЛИ ПИШЕШЬ МЕНЮ/ДНЕВНИК: Считай математику безупречно, выдавай понятные отчеты."""
 
 async def ask_ai(image_base64=None, text_prompt=None, context=""):
@@ -97,75 +109,179 @@ async def ask_ai(image_base64=None, text_prompt=None, context=""):
     response = await client.chat.completions.create(model="gpt-4o", messages=messages, temperature=0.3)
     return response.choices[0].message.content
 
+# --- МЕДИЦИНСКАЯ ФОРМУЛА ---
+def calculate_norm(gender, age, height, weight, goal, activity):
+    # Формула Миффлина - Сан Жеора
+    if gender == 'M':
+        bmr = (10 * weight) + (6.25 * height) - (5 * age) + 5
+    else:
+        bmr = (10 * weight) + (6.25 * height) - (5 * age) - 161
+        
+    act_mults = {"Низкая": 1.2, "Средняя": 1.55, "Высокая": 1.725}
+    tdee = bmr * act_mults.get(activity, 1.2)
+    
+    if goal == "Похудение": tdee *= 0.8
+    elif goal == "Набор массы": tdee *= 1.2
+        
+    return int(tdee)
+
+# --- ЛОГИКА ПРОФИЛЯ ---
 @dp.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
-    await message.answer("Привет! 👋 Я твой ИИ-нутрициолог.\n\nПросто отправь мне фото еды или нажми кнопку меню внизу!", reply_markup=main_menu)
+    user_id = str(message.from_user.id)
+    doc = db.collection('users').document(user_id).get()
+    
+    if doc.exists:
+        await message.answer("Привет! 👋 Я твой ИИ-нутрициолог.\nЖду фото еды!", reply_markup=main_menu)
+    else:
+        await message.answer("Привет! 👋 Давай настроим твой профиль, чтобы я мог точно считать калории.\n\nУкажи свой пол:", reply_markup=gender_kb)
+        await state.set_state(ProfileStates.gender)
 
-# --- ИСПРАВЛЕН БАГ №2: Полная отмена процессов ---
-@dp.message(F.text == "❌ Сбросить шаг / Начать заново")
+@dp.callback_query(ProfileStates.gender, F.data.startswith("gender_"))
+async def ask_age(callback: CallbackQuery, state: FSMContext):
+    gender = callback.data.split("_")[1]
+    await state.update_data(gender=gender)
+    await callback.message.edit_text("Отлично! Напиши свой возраст (цифрой, например: 25):")
+    await state.set_state(ProfileStates.age)
+
+@dp.message(ProfileStates.age)
+async def ask_height(message: Message, state: FSMContext):
+    if not message.text.isdigit():
+        return await message.answer("Пожалуйста, введи только цифры (например: 25).")
+    await state.update_data(age=int(message.text))
+    await message.answer("Укажи свой рост в см (например: 170):")
+    await state.set_state(ProfileStates.height)
+
+@dp.message(ProfileStates.height)
+async def ask_weight(message: Message, state: FSMContext):
+    if not message.text.isdigit():
+        return await message.answer("Пожалуйста, введи только цифры (например: 170).")
+    await state.update_data(height=int(message.text))
+    await message.answer("Укажи свой текущий вес в кг (можно с точкой, например: 65.5):")
+    await state.set_state(ProfileStates.weight)
+
+@dp.message(ProfileStates.weight)
+async def ask_prof_goal(message: Message, state: FSMContext):
+    try:
+        weight = float(message.text.replace(',', '.'))
+        await state.update_data(weight=weight)
+        await message.answer("Какая у тебя цель?", reply_markup=goal_keyboard)
+        await state.set_state(ProfileStates.goal)
+    except ValueError:
+        await message.answer("Пожалуйста, введи вес цифрами.")
+
+@dp.callback_query(ProfileStates.goal, F.data.startswith("goal_"))
+async def ask_prof_act(callback: CallbackQuery, state: FSMContext):
+    goals = {"goal_loss": "Похудение", "goal_maintain": "Поддержание", "goal_gain": "Набор массы"}
+    await state.update_data(goal=goals[callback.data])
+    await callback.message.edit_text("Выбери уровень активности:", reply_markup=activity_keyboard)
+    await state.set_state(ProfileStates.activity)
+
+@dp.callback_query(ProfileStates.activity, F.data.startswith("act_"))
+async def finish_profile(callback: CallbackQuery, state: FSMContext):
+    acts = {"act_low": "Низкая", "act_med": "Средняя", "act_high": "Высокая"}
+    user_data = await state.get_data()
+    gender, age, height, weight, goal = user_data['gender'], user_data['age'], user_data['height'], user_data['weight'], user_data['goal']
+    activity = acts[callback.data]
+    
+    norm = calculate_norm(gender, age, height, weight, goal, activity)
+    
+    db.collection('users').document(str(callback.from_user.id)).set({
+        'gender': gender, 'age': age, 'height': height, 'weight': weight,
+        'goal': goal, 'activity': activity, 'norm': norm
+    })
+    
+    await callback.message.delete()
+    await callback.message.answer(f"✅ Профиль создан!\n\nТвоя индивидуальная норма калорий: **{norm} ккал**.\nТеперь присылай фото еды, а я всё посчитаю!", reply_markup=main_menu)
+    await state.clear()
+
+@dp.message(F.text == "👤 Мой профиль")
+async def show_my_profile(message: Message):
+    doc = db.collection('users').document(str(message.from_user.id)).get()
+    if not doc.exists:
+        return await message.answer("Профиль не найден. Нажми /start для регистрации.")
+    
+    data = doc.to_dict()
+    text = f"👤 **Твой профиль:**\n\nВес: {data['weight']} кг\nРост: {data['height']} см\nВозраст: {data['age']} лет\nЦель: {data['goal']}\n\n🔥 **Дневная норма: {data['norm']} ккал**"
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⚖️ Обновить вес", callback_data="update_weight")]])
+    await message.answer(text, reply_markup=kb)
+
+@dp.callback_query(F.data == "update_weight")
+async def req_new_weight(callback: CallbackQuery, state: FSMContext):
+    await callback.message.edit_text("Введи свой новый вес (кг):")
+    await state.set_state(ProfileStates.new_weight)
+
+@dp.message(ProfileStates.new_weight)
+async def save_new_weight(message: Message, state: FSMContext):
+    try:
+        new_weight = float(message.text.replace(',', '.'))
+        user_id = str(message.from_user.id)
+        doc_ref = db.collection('users').document(user_id)
+        data = doc_ref.get().to_dict()
+        
+        # Пересчитываем норму с новым весом!
+        new_norm = calculate_norm(data['gender'], data['age'], data['height'], new_weight, data['goal'], data['activity'])
+        doc_ref.update({'weight': new_weight, 'norm': new_norm})
+        
+        await message.answer(f"🎉 Вес обновлен!\nНовая норма пересчитана: **{new_norm} ккал**.", reply_markup=main_menu)
+        await state.clear()
+    except ValueError:
+        await message.answer("Введи цифры.")
+
+# --- ОТМЕНА ---
+@dp.message(F.text == "❌ Сбросить шаг")
 async def cancel_action(message: Message, state: FSMContext):
     await state.clear()
-    await message.answer("🔄 Все текущие расчеты отменены. Можешь прислать новое фото!", reply_markup=main_menu)
+    await message.answer("🔄 Шаг отменен.", reply_markup=main_menu)
 
-# --- ЛОГИКА FIREBASE ДНЕВНИКА ---
+# --- ЛОГИКА ДНЕВНИКА С УЧЕТОМ НОРМЫ ---
 def get_today_doc_id(user_id):
     today = datetime.now().strftime("%Y-%m-%d")
     return f"{user_id}_{today}"
 
 @dp.message(F.text == "📊 Мой дневник")
 async def show_diary(message: Message):
-    if not db:
-        await message.answer("⚠️ База данных не подключена.")
-        return
+    user_id = str(message.from_user.id)
+    
+    # Достаем норму из профиля
+    user_doc = db.collection('users').document(user_id).get()
+    if not user_doc.exists:
+        return await message.answer("Заполни профиль (/start), чтобы я мог считать остаток калорий.")
+    norm = user_doc.to_dict().get('norm', 2000)
         
-    user_id = message.from_user.id
     doc_ref = db.collection('diaries').document(get_today_doc_id(user_id))
     doc = doc_ref.get()
     
     if not doc.exists or not doc.to_dict().get('meals'):
-        await message.answer("Твой дневник за сегодня пуст! 🍽 Отправь фото еды и нажми «Записать в дневник».", reply_markup=main_menu)
-        return
+        return await message.answer(f"Дневник пуст! Отправь фото.\n(Твоя цель на сегодня: {norm} ккал)", reply_markup=main_menu)
     
     meals = doc.to_dict().get('meals', [])
-    msg = await message.answer("📊 Достаю записи из базы и считаю итоги...")
+    msg = await message.answer("📊 Считаю итоги за сегодня...")
     
     diary_text = "\n\n---\n".join(meals)
-    
-    # --- ПРОКАЧАННАЯ ИНСТРУКЦИЯ ДЛЯ НЕЙРОСЕТИ ---
-    prompt = f"""Вот список всего, что я съел(а) за сегодня:
-{diary_text}
-
-Сделай красивый и понятный отчет:
-1. Кратко перечисли всё съеденное (списком).
-2. Посчитай ИТОГОВУЮ СУММУ КБЖУ за день (выведи жирным).
-3. МОЯ НОРМА: 1600 ккал. Сравни сумму с моей нормой и напиши, сколько калорий мне еще осталось съесть сегодня (или на сколько я превысил(а) лимит)."""
+    prompt = f"Съедено сегодня:\n{diary_text}\n\nСделай отчет:\n1. Краткий список съеденного.\n2. ИТОГ КБЖУ.\n3. МОЯ НОРМА: {norm} ккал. Напиши, сколько калорий осталось съесть (или перебор)."
     
     try:
         ai_response = await ask_ai(text_prompt=prompt)
         await msg.edit_text(ai_response)
-    except Exception as e:
-        await msg.edit_text("Произошла ошибка при анализе дневника.")
+    except Exception:
+        await msg.edit_text("Ошибка при анализе.")
+
 @dp.callback_query(F.data == "save_to_diary")
 async def save_to_diary(callback: CallbackQuery, state: FSMContext):
-    if not db:
-        await callback.answer("Ошибка базы данных!", show_alert=True)
-        return
-        
     user_id = callback.from_user.id
     data = await state.get_data()
     last_response = data.get("last_ai_response")
     
     if not last_response:
-        await callback.answer("Нечего сохранять!", show_alert=True)
-        return
+        return await callback.answer("Нечего сохранять!", show_alert=True)
 
-    # Запись в Firebase
-    doc_ref = db.collection('diaries').document(get_today_doc_id(user_id))
-    doc_ref.set({'meals': firestore.ArrayUnion([last_response])}, merge=True)
+    db.collection('diaries').document(get_today_doc_id(user_id)).set({'meals': firestore.ArrayUnion([last_response])}, merge=True)
     
     await callback.message.edit_reply_markup(reply_markup=None)
-    await callback.message.answer("✅ Блюдо записано в твой профиль Firebase!")
+    await callback.message.answer("✅ Блюдо записано в дневник!")
     await callback.answer()
 
 # --- ФОТО ЕДЫ ---
@@ -179,90 +295,29 @@ async def handle_photo(message: Message, state: FSMContext):
     
     await state.update_data(saved_photo=image_base64, photo_caption=message.caption or "")
     await state.set_state(BotStates.waiting_for_status)
-    
-    # ИСПРАВЛЕН БАГ №3: Добавлена четкая инструкция нажать на кнопку
-    await message.answer("Супер! Уточни статус продукта (нажми на одну из кнопок ниже 👇):", reply_markup=status_keyboard)
+    await message.answer("Супер! Уточни статус продукта:", reply_markup=status_keyboard)
 
 @dp.callback_query(BotStates.waiting_for_status, F.data.in_(["status_raw", "status_cooked"]))
 async def process_photo_status(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_reply_markup(reply_markup=None)
     await callback.message.edit_text("⏳ Нейросеть изучает фото...")
-    
     user_data = await state.get_data()
-    image_base64 = user_data.get("saved_photo")
-    
-    status_text = "ЭТО СЫРЫЕ ПРОДУКТЫ" if callback.data == "status_raw" else "ЭТО ГОТОВОЕ БЛЮДО"
-    if user_data.get("photo_caption"):
-        status_text += f". Комментарий пользователя: {user_data.get('photo_caption')}"
+    status_text = "СЫРЫЕ ПРОДУКТЫ" if callback.data == "status_raw" else "ГОТОВОЕ БЛЮДО"
+    if user_data.get("photo_caption"): status_text += f". Коммент: {user_data.get('photo_caption')}"
         
     try:
-        ai_response = await ask_ai(image_base64=image_base64, context=status_text)
-        current_state = await state.get_state()
-        if current_state != BotStates.waiting_for_status.state:
-            return 
+        ai_response = await ask_ai(image_base64=user_data.get("saved_photo"), context=status_text)
+        if await state.get_state() != BotStates.waiting_for_status.state: return 
             
         await state.update_data(last_ai_response=ai_response)
-        diary_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="➕ Записать в дневник", callback_data="save_to_diary")]])
-        await callback.message.edit_text(ai_response, reply_markup=diary_kb)
-        
-        # ВАЖНОЕ ИЗМЕНЕНИЕ: мы убрали полную очистку памяти (state.clear)
-        # Теперь бот просто перестает ждать статус, но текст расчета бережно хранит!
-        await state.set_state(None)
-        
-    except Exception as e:
-        await callback.message.edit_text("Упс, произошла ошибка.")
-        await state.clear()
-# --- МЕНЮ ---
-@dp.message(F.text == "🍎 Составить меню")
-async def handle_menu_btn(message: Message, state: FSMContext):
-    await message.answer("Напиши параметры: **вес, рост, возраст** (например: 65, 170, 25).")
-    await state.set_state(BotStates.waiting_for_user_params)
-
-@dp.message(BotStates.waiting_for_user_params)
-async def process_user_params(message: Message, state: FSMContext):
-    await state.update_data(user_params=message.text)
-    await message.answer("🎯 Выбери цель:", reply_markup=goal_keyboard)
-    await state.set_state(BotStates.waiting_for_goal)
-
-@dp.callback_query(BotStates.waiting_for_goal, F.data.startswith("goal_"))
-async def process_goal(callback: CallbackQuery, state: FSMContext):
-    await callback.message.edit_reply_markup(reply_markup=None)
-    goals = {"goal_loss": "Похудение", "goal_maintain": "Поддержание", "goal_gain": "Набор массы"}
-    await state.update_data(user_goal=goals[callback.data])
-    await callback.message.answer("🏃‍♀️ Оцени активность:", reply_markup=activity_keyboard)
-    await state.set_state(BotStates.waiting_for_activity)
-
-@dp.callback_query(BotStates.waiting_for_activity, F.data.startswith("act_"))
-async def process_activity(callback: CallbackQuery, state: FSMContext):
-    await callback.message.edit_reply_markup(reply_markup=None)
-    activities = {"act_low": "Низкая", "act_med": "Средняя", "act_high": "Высокая"}
-    await state.update_data(user_activity=activities[callback.data])
-    await callback.message.answer("📝 Напиши список продуктов:")
-    await state.set_state(BotStates.waiting_for_menu_ingredients)
-
-@dp.message(BotStates.waiting_for_menu_ingredients)
-async def process_menu_ingredients(message: Message, state: FSMContext):
-    await state.update_data(user_ingredients=message.text)
-    await message.answer("Можно добавить базу (масло, специи)?", reply_markup=extra_keyboard)
-    await state.set_state(BotStates.waiting_for_extra_permission)
-
-@dp.callback_query(BotStates.waiting_for_extra_permission, F.data.startswith("extra_"))
-async def process_extra_permission(callback: CallbackQuery, state: FSMContext):
-    await callback.message.edit_reply_markup(reply_markup=None)
-    await callback.message.edit_text("🍳 Считаю...")
-    
-    user_data = await state.get_data()
-    extra = "РАЗРЕШЕНО добавлять базу." if callback.data == "extra_yes" else "СТРОГО ЗАПРЕЩЕНО добавлять чужое."
-    prompt = f"Параметры: {user_data.get('user_params')}. Цель: {user_data.get('user_goal')}. Активность: {user_data.get('user_activity')}. Продукты: {user_data.get('user_ingredients')}. {extra}"
-    
-    try:
-        ai_response = await ask_ai(text_prompt=prompt)
-        await callback.message.edit_text(ai_response)
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="➕ Записать в дневник", callback_data="save_to_diary")]])
+        await callback.message.edit_text(ai_response, reply_markup=kb)
+        await state.set_state(None) # ВАЖНО: не стираем память, просто снимаем состояние
     except Exception:
         await callback.message.edit_text("Ошибка.")
-    finally:
         await state.clear()
 
+# --- ВЕБ-СЕРВЕР ДЛЯ RENDER ---
 async def health_check(request):
     return web.Response(text="Bot is running!")
 
