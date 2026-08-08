@@ -190,8 +190,6 @@ async def process_photo_status(callback: CallbackQuery, state: FSMContext):
         
     try:
         ai_response = await ask_ai(image_base64=image_base64, context=status_text)
-        
-        # БАГ №2 (Защита): Проверяем, не нажал ли человек "Сбросить шаг"
         current_state = await state.get_state()
         if current_state != BotStates.waiting_for_status.state:
             return 
@@ -199,11 +197,14 @@ async def process_photo_status(callback: CallbackQuery, state: FSMContext):
         await state.update_data(last_ai_response=ai_response)
         diary_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="➕ Записать в дневник", callback_data="save_to_diary")]])
         await callback.message.edit_text(ai_response, reply_markup=diary_kb)
+        
+        # ВАЖНОЕ ИЗМЕНЕНИЕ: мы убрали полную очистку памяти (state.clear)
+        # Теперь бот просто перестает ждать статус, но текст расчета бережно хранит!
+        await state.set_state(None)
+        
     except Exception as e:
         await callback.message.edit_text("Упс, произошла ошибка.")
-    finally:
         await state.clear()
-
 # --- МЕНЮ ---
 @dp.message(F.text == "🍎 Составить меню")
 async def handle_menu_btn(message: Message, state: FSMContext):
