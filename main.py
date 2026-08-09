@@ -91,15 +91,15 @@ extra_keyboard = InlineKeyboardMarkup(inline_keyboard=[
 ])
 
 # ЖЕСТКОЕ ПРАВИЛО ДЛЯ КРАСИВОГО ТЕКСТА (ДЛЯ АРТЕМА)
-SYSTEM_PROMPT = """Ты — профессиональный ИИ-нутрициолог. 
+SYSTEM_PROMPT = SYSTEM_PROMPT = """Ты — профессиональный ИИ-нутрициолог. 
 ТВОЕ ГЛАВНОЕ ПРАВИЛО: НИКАКИХ ПОЛОТЕН ТЕКСТА! Всегда структурируй свой ответ. Используй короткие абзацы, списки (с буллитами), выделяй жирным шрифтом заголовки и итоговое КБЖУ. Обязательно добавляй подходящие эмодзи для красоты.
+ВАЖНОЕ ПРАВИЛО ПО ЦИФРАМ: НИКАКИХ ДИАПАЗОНОВ! Выдавай только ОДНО точное число для веса, калорий и БЖУ (например, пиши не 15-20 г, а ровно 18 г).
 
 ЕСЛИ СЧИТАЕШЬ ФОТО ИЛИ ЕДУ: 
-1. Если на фото блюдо с закрытой начинкой (блины, пирожки) или тебе совершенно непонятен состав, НЕ УГАДЫВАЙ! Напиши ровно одно слово "УТОЧНИТЬ:" и задай вопрос. Пример: "УТОЧНИТЬ: Не вижу начинку! С чем блины?"
-2. Если всё понятно, выдай красивый и четкий расчет."""
-
-async def ask_ai(image_base64=None, text_prompt=None, context=""):
+1. Если на фото блюдо с закрытой начинкой (блины, пирожки) или тебе совершенно непонятен состав, НЕ УГАДЫВАЙ! Напиши ровно одно слово "УТОЧНИТЬ:" и задай вопрос.
+2. Если всё понятно, выдай красивый и четкий расчет."""async def ask_ai(image_base64=None, text_prompt=None, context=""):
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    
     if image_base64:
         messages.append({
             "role": "user",
@@ -357,16 +357,6 @@ async def process_photo_status(callback: CallbackQuery, state: FSMContext):
     if data.get("photo_caption"): st += f". Коммент: {data['photo_caption']}"
     
     try:
-        res = await ask_ai(image_base64=data.get("saved_photo"), context=st)
-        if await state.get_state() != BotStates.waiting_for_status.state: return 
-        
-        if res.startswith("УТОЧНИТЬ:"):
-            question = res.replace("УТОЧНИТЬ:", "").strip()
-            await callback.message.edit_text(f"🤔 {question}\n\n(Напиши ответ текстом)")
-            await state.update_data(current_context=st)
-            await state.set_state(BotStates.waiting_for_clarification)
-            return
-
         await state.update_data(last_ai_response=res)
         await callback.message.edit_text(res, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="➕ Записать в дневник", callback_data="save_to_diary")]]))
         await state.set_state(None)
