@@ -394,10 +394,21 @@ async def process_clarification(message: Message, state: FSMContext):
     
     try:
         res = await ask_ai(image_base64=data.get("saved_photo"), context=new_context)
+        
+        # 💡 ИСПРАВЛЕНИЕ: Если нейросеть задает ВТОРОЙ (или третий) уточняющий вопрос
+        if "УТОЧНИТЬ:" in res:
+            question = res.replace("**УТОЧНИТЬ:**", "").replace("УТОЧНИТЬ:", "").strip()
+            await msg.edit_text(f"🤔 {question}\n\n(Напиши ответ текстом)")
+            await state.update_data(current_context=new_context)
+            # Состояние НЕ сбрасываем, ждем следующий текстовый ответ
+            return
+
+        # Если вопросов больше нет и это финальный расчет — выдаем кнопку
         await state.update_data(last_ai_response=res)
         kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="➕ Записать в дневник", callback_data="save_to_diary")]])
         await msg.edit_text(res, reply_markup=kb)
         await state.set_state(None)
+        
     except Exception:
         await msg.edit_text("Ошибка при пересчете.")
         await state.clear()
