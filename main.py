@@ -348,8 +348,7 @@ async def main():
 if __name__ == "__main__":
     asyncio.run(main())
     # --- ЛОГИКА СОСТАВЛЕНИЯ МЕНЮ ---
-@dp.message(F.text == "🍎 Составить меню")
-async def start_menu_generation(message: Message, state: FSMContext):
+@dp.message(F.text.contains("Составить меню"))async def start_menu_generation(message: Message, state: FSMContext):
     user_id = str(message.from_user.id)
     doc = db.collection('users').document(user_id).get()
     
