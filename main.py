@@ -5,7 +5,6 @@ import json
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from aiohttp import web
-
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.filters import CommandStart
@@ -355,6 +354,28 @@ async def process_photo_status(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     st = "СЫРЫЕ ПРОДУКТЫ" if callback.data == "status_raw" else "ГОТОВОЕ БЛЮДО"
     if data.get("photo_caption"): st += f". Коммент: {data['photo_caption']}"
+    
+    try:
+        res = await ask_ai(image_base64=data.get("saved_photo"), context=st)
+        if await state.get_state() != BotStates.waiting_for_status.state: return 
+        
+        # 💡 ИСПРАВЛЕННЫЙ БЛОК: Ищем слово УТОЧНИТЬ в тексте, даже если ИИ добавил звездочки
+        if "УТОЧНИТЬ:" in res:
+            question = res.replace("**УТОЧНИТЬ:**", "").replace("УТОЧНИТЬ:", "").strip()
+            await callback.message.edit_text(f"🤔 {question}\n\n(Напиши ответ текстом)")
+            await state.update_data(current_context=st)
+            await state.set_state(BotStates.waiting_for_clarification)
+            return
+
+        # Если это не вопрос, а готовый расчет, то выдаем его и кнопку дневника
+        await state.update_data(last_ai_response=res)
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="➕ Записать в дневник", callback_data="save_to_diary")]])
+        await callback.message.edit_text(res, reply_markup=kb)
+        await state.set_state(None)
+        
+    except Exception:
+        await callback.message.edit_text("Ошибка при обработке фото.")
+        await state.clear()
     
     try:
         await state.update_data(last_ai_response=res)
