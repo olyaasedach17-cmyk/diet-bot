@@ -96,7 +96,8 @@ SYSTEM_PROMPT = SYSTEM_PROMPT = """Ты — профессиональный И�
 
 ЕСЛИ СЧИТАЕШЬ ФОТО ИЛИ ЕДУ: 
 1. Если на фото блюдо с закрытой начинкой (блины, пирожки) или тебе совершенно непонятен состав, НЕ УГАДЫВАЙ! Напиши ровно одно слово "УТОЧНИТЬ:" и задай вопрос.
-2. Если всё понятно, выдай красивый и четкий расчет."""async def ask_ai(image_base64=None, text_prompt=None, context=""):
+2. Если всё понятно, выдай красивый и четкий расчет."""
+async def ask_ai(image_base64=None, text_prompt=None, context=""):
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     
     if image_base64:
