@@ -231,17 +231,32 @@ async def process_menu_ingredients(message: Message, state: FSMContext):
 @dp.callback_query(BotStates.waiting_for_extra_permission, F.data.startswith("extra_"))
 async def process_extra_permission(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_reply_markup(reply_markup=None)
-    await callback.message.edit_text("🍳 Придумываю рецепт...")
+    await callback.message.edit_text("🍳 Придумываю рецепт и считаю граммовки...")
+    
     data = db.collection('users').document(str(callback.from_user.id)).get().to_dict()
     s_data = await state.get_data()
     ex = "РАЗРЕШЕНО добавлять базу." if callback.data == "extra_yes" else "СТРОГО ЗАПРЕЩЕНО добавлять чужие ингредиенты."
+    
     prompt = f"Составь меню на 1 прием пищи. Цель {data['goal']}, норма {data['norm']} ккал. Ингредиенты: {s_data.get('user_ingredients')}. {ex} Напиши рецепт и граммовки (на 25-35% от нормы). Выведи КБЖУ."
+    
     try:
         res = await ask_ai(text_prompt=prompt)
-        await callback.message.edit_text(res)
+        
+        # Сохраняем рецепт в память бота, чтобы его можно было записать в дневник
+        await state.update_data(last_ai_response=f"🍽 По рецепту:\n{res}")
+        
+        # Создаем новую кнопку
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🍽 Я съем это! (Записать в дневник)", callback_data="save_to_diary")]
+        ])
+        
+        # Выводим рецепт с кнопкой
+        await callback.message.edit_text(res, reply_markup=kb)
+        
+        # ВАЖНО: снимаем режим ожидания, но НЕ стираем рецепт из памяти
+        await state.set_state(None) 
     except Exception:
         await callback.message.edit_text("Ошибка при составлении меню.")
-    finally:
         await state.clear()
 
 # --- ДНЕВНИК ---
