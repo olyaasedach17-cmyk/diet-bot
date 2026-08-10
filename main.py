@@ -2,6 +2,8 @@ import asyncio
 import os
 import base64
 import json
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from aiohttp import web
@@ -419,7 +421,36 @@ async def process_clarification(message: Message, state: FSMContext):
 async def health_check(request):
     return web.Response(text="Bot is running!")
 
+# --- УТРЕННЯЯ РАССЫЛКА ---
+async def send_morning_reminders():
+    if not db:
+        return
+    print("🌅 Запуск утренней рассылки...")
+    users_ref = db.collection('users').stream()
+    
+    for doc in users_ref:
+        user_id = doc.id
+        try:
+            # Отправляем сообщение каждому пользователю в базе
+            await bot.send_message(
+                chat_id=user_id, 
+                text="☀️ Доброе утро! Готов посчитать твои калории.\nЖду фото твоего завтрака! 🍳", 
+                reply_markup=main_menu
+            )
+        except Exception as e:
+            print(f"❌ Не удалось отправить сообщение пользователю {user_id}: {e}")
+
+# --- СЕРВЕР И ЗАПУСК ---
+async def health_check(request):
+    return web.Response(text="Bot is running!")
+
 async def main():
+    # Настраиваем таймер
+    scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
+    # Ставим рассылку каждый день в 09:00 утра
+    scheduler.add_job(send_morning_reminders, trigger=CronTrigger(hour=9, minute=0))
+    scheduler.start()
+
     app = web.Application()
     app.router.add_get('/', health_check)
     runner = web.AppRunner(app)
