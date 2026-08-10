@@ -123,14 +123,27 @@ async def ask_ai(image_base64=None, text_prompt=None, context=""):
     return response.choices[0].message.content
 
 def calculate_norm(gender, age, height, weight, goal, activity):
-    if gender == 'M': bmr = (10 * weight) + (6.25 * height) - (5 * age) + 5
-    else: bmr = (10 * weight) + (6.25 * height) - (5 * age) - 161
+    # 1. Считаем базовый обмен (BMR)
+    if gender == 'M': 
+        bmr = (10 * weight) + (6.25 * height) - (5 * age) + 5
+    else: 
+        bmr = (10 * weight) + (6.25 * height) - (5 * age) - 161
+        
+    # 2. Считаем норму поддержки с учетом активности
     act_mults = {"Низкая": 1.2, "Средняя": 1.55, "Высокая": 1.725}
     tdee = bmr * act_mults.get(activity, 1.2)
-    if goal == "Похудение": tdee *= 0.8
-    elif goal == "Набор массы": tdee *= 1.2
-    return int(tdee)
-
+    
+    # 3. Применяем цели и ставим "защиту" от слишком сильного дефицита
+    final_norm = tdee
+    if goal == "Похудение": 
+        final_norm = tdee * 0.8
+        # Тот самый ограничитель Артема: если дефицит меньше базы, выдаем базу
+        if final_norm < bmr:
+            final_norm = bmr
+    elif goal == "Набор массы": 
+        final_norm = tdee * 1.2
+        
+    return int(final_norm)
 def get_user_profile(user_id):
     doc = db.collection('users').document(str(user_id)).get()
     return doc.to_dict() if doc.exists else None
