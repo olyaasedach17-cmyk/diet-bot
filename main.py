@@ -164,7 +164,7 @@ def get_user_profile(user_id):
 async def cmd_start(message: Message, state: FSMContext):
      await state.clear()
      user_name = message.from_user.first_name or "друг"
-    if get_user_profile(message.from_user.id):
+     if get_user_profile(message.from_user.id):
       await message.answer(
         "Я готов к работе! Присылай фото своей еды 📸\n\n"
         "💡 *Лайфхак:* чтобы я максимально точно определял вес порции, всегда старайся класть рядом с тарелкой вилку, ложку или монету для масштаба!",
