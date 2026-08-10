@@ -348,12 +348,26 @@ async def save_to_diary(callback: CallbackQuery, state: FSMContext):
 # --- ФОТО И УТОЧНЕНИЯ ---
 @dp.message(F.photo)
 async def handle_photo(message: Message, state: FSMContext):
-    await state.clear()
-    file = await bot.get_file(message.photo[-1].file_id)
-    d_file = await bot.download_file(file.file_path)
-    await state.update_data(saved_photo=base64.b64encode(d_file.read()).decode('utf-8'), photo_caption=message.caption or "")
-    await state.set_state(BotStates.waiting_for_status)
-    await message.answer("Уточни статус продукта:", reply_markup=status_keyboard)
+    try:
+        await state.clear()
+        
+        # Пытаемся получить информацию о фото
+        file = await bot.get_file(message.photo[-1].file_id)
+        
+        # Пытаемся скачать само фото
+        d_file = await bot.download_file(file.file_path)
+        
+        # Пытаемся перевести его в текстовый формат
+        encoded_photo = base64.b64encode(d_file.read()).decode('utf-8')
+        
+        await state.update_data(saved_photo=encoded_photo, photo_caption=message.caption or "")
+        await state.set_state(BotStates.waiting_for_status)
+        await message.answer("Уточни статус продукта:", reply_markup=status_keyboard)
+        
+    except Exception as e:
+        # Если что-то ломается, бот напишет точную причину прямо в чат!
+        print(f"❌ ОШИБКА ПРИ ЗАГРУЗКЕ ФОТО: {e}")
+        await message.answer(f"Техническая ошибка скачивания: {e}")
 
 @dp.callback_query(BotStates.waiting_for_status, F.data.in_(["status_raw", "status_cooked"]))
 async def process_photo_status(callback: CallbackQuery, state: FSMContext):
