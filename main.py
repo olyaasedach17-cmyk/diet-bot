@@ -65,6 +65,7 @@ main_menu = ReplyKeyboardMarkup(
         [KeyboardButton(text="❌ Сбросить шаг")]
     ],
     resize_keyboard=True,
+    is_persistent=True,  # 👈 Вот эта новая строчка!
     input_field_placeholder="Выбери действие..."
 )
 
