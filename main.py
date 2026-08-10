@@ -458,7 +458,7 @@ async def process_clarification(message: Message, state: FSMContext):
     try:
         res = await ask_ai(image_base64=data.get("saved_photo"), context=new_context)
         
-     if "УТОЧНИТЬ:" in res:
+        if "УТОЧНИТЬ:" in res:
             question = res.replace("**УТОЧНИТЬ:**", "").replace("УТОЧНИТЬ:", "").strip()
             await msg.edit_text(f"🤔 {question}\n\n(Напиши ответ текстом)")
             
