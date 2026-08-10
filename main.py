@@ -96,16 +96,24 @@ extra_keyboard = InlineKeyboardMarkup(inline_keyboard=[
 
 # --- ЖЕСТКОЕ ПРАВИЛО ДЛЯ ИИ ---
 SYSTEM_PROMPT = """Ты — профессиональный ИИ-нутрициолог. 
-ТВОЕ ГЛАВНОЕ ПРАВИЛО: НИКАКИХ ПОЛОТЕН ТЕКСТА! Всегда структурируй свой ответ. 
-СТРОГОЕ ПРАВИЛО ФОРМАТИРОВАНИЯ: КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО использовать символ решетки `#` для заголовков! Используй только звездочки `**текст**` для выделения жирным и эмодзи.
-ВАЖНОЕ ПРАВИЛО ПО ЦИФРАМ: НИКАКИХ ДИАПАЗОНОВ! Выдавай только ОДНО точное число для веса, калорий и БЖУ.
+ТВОЕ ГЛАВНОЕ ПРАВИЛО: НИКАКИХ ПОЛОТЕН ТЕКСТА! 
+СТРОГОЕ ПРАВИЛО ФОРМАТИРОВАНИЯ: КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО использовать символ решетки `#`! Если используешь заголовки, выделяй их только звездочками: **Текст**.
 
 ЕСЛИ СЧИТАЕШЬ ФОТО ИЛИ ЕДУ: 
-1. ПРАВИЛО СОМНЕНИЯ: Если ты НЕ УВЕРЕН на 100%, что именно на фото (например, темный напиток — это чай, кофе или кола? Белая каша — это рис или манка?), КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО угадывать! Сразу спроси пользователя, что это.
-2. СКРЫТЫЕ КАЛОРИИ: Если это блюдо, где может быть сахар, сироп, масло, соус или скрытая начинка — спроси об этом.
-3. ФОРМАТ ВОПРОСА: Ты можешь объединить оба сомнения в один вопрос. Свой вопрос ВСЕГДА начинай со слова "УТОЧНИТЬ:". (Пример: "УТОЧНИТЬ: Это кофе или чай? И добавлял(а) ли ты сахар?"). 
-4. После ответа пользователя БОЛЬШЕ НИЧЕГО НЕ СПРАШИВАЙ и сразу выдавай финальный расчет.
-5. Если блюдо 100% понятно визуально (например, целое яблоко) и скрытых калорий быть не может — выдавай расчет без вопросов."""
+1. ПРИОРИТЕТ ДАННЫХ: Если пользователь написал точный вес (например, "200г"), ты ОБЯЗАН использовать эти цифры. Не спорь и не меняй их!
+2. ПРАВИЛО СОМНЕНИЯ: Если не уверен, что на фото — спроси. Если могут быть скрытые калории (масло, сахар, соус) — спроси. Вопрос начинай с "УТОЧНИТЬ:". Обязательно добавляй в конце своего вопроса фразу: "Если знаете, напишите точный вес — это поможет нам работать с вашим питанием максимально точно!"
+3. МАСШТАБ: Если на фото нет предметов для понимания размера (вилка, рука), добавь в конце ответа: "💡 *Совет: в следующий раз положи рядом столовый прибор, чтобы я точнее оценил порцию!*"
+
+ШАБЛОН ФИНАЛЬНОГО РАСЧЕТА (Используй СТРОГО его, не меняй названия строк):
+**🍽 Состав блюда:**
+- [Ингредиент 1]: [вес] г
+- [Ингредиент 2]: [вес] г
+
+**📊 КБЖУ на всю порцию:**
+- Калории: [точная цифра] ккал
+- Белки: [точная цифра] г
+- Жиры: [точная цифра] г
+- Углеводы: [точная цифра] г"""
 
 async def ask_ai(image_base64=None, text_prompt=None, context=""):
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -115,12 +123,17 @@ async def ask_ai(image_base64=None, text_prompt=None, context=""):
             "role": "user",
             "content": [
                 {"type": "text", "text": f"Контекст: {context}. Изучи еду, оцени вес и КБЖУ."},
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}
+                # В следующей строке добавлено "detail": "low" для жесткой экономии на картинках
+                {"type": "image_url", "image_url": {
+                    "url": f"data:image/jpeg;base64,{image_base64}",
+                    "detail": "low"
+                }}
             ]
         })
     elif text_prompt:
         messages.append({"role": "user", "content": text_prompt})
 
+    # Модель остается gpt-4o, как ты и хотела
     response = await client.chat.completions.create(model="gpt-4o", messages=messages, temperature=0.3)
     return response.choices[0].message.content
 
@@ -371,15 +384,66 @@ async def show_diary(message: Message):
 async def save_to_diary(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     if not data.get("last_ai_response"): return await callback.answer("Нечего сохранять!", show_alert=True)
+    
     record = f"⏰ {datetime.now().strftime('%H:%M:%S')}\n{data['last_ai_response']}"
-    db.collection('diaries').document(get_today_doc_id(callback.from_user.id)).set({'meals': firestore.ArrayUnion([record])}, merge=True)
-    await callback.message.edit_reply_markup(reply_markup=None)
-    await callback.message.answer("✅ Записано в дневник!")
+    user_id = str(callback.from_user.id)
+    doc_id = get_today_doc_id(user_id)
+    
+    # Сохраняем в Firebase
+    db.collection('diaries').document(doc_id).set({'meals': firestore.ArrayUnion([record])}, merge=True)
+    
+    # Запоминаем запись на случай отмены
+    await state.update_data(last_saved_record=record)
+    
+    # Выдаем сообщение с кнопкой отмены
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="↩️ Отменить эту запись", callback_data="undo_diary")]
+    ])
+    await callback.message.edit_text("✅ Записано в дневник!", reply_markup=kb)
+
+    # --- НОВЫЙ БЛОК: Считаем остаток КБЖУ на сегодня ---
+    user_data = get_user_profile(user_id)
+    if user_data:
+        # Вытаскиваем весь дневник за сегодня
+        doc = db.collection('diaries').document(doc_id).get()
+        meals = doc.to_dict().get('meals', [])
+        
+        wait_msg = await callback.message.answer("⏳ Считаю остаток КБЖУ...")
+        
+        prompt = (f"Вот все мои приемы пищи за сегодня:\n{chr(10).join(meals)}\n\n"
+                  f"Моя норма: {user_data['norm']} ккал. \n"
+                  f"1. Посчитай сумму съеденного КБЖУ.\n"
+                  f"2. Вычисли мою норму БЖУ от калорий (30% белки, 30% жиры, 40% углеводы).\n"
+                  f"3. Вычти съеденное из нормы.\n"
+                  f"ОТВЕТЬ СТРОГО ПО ЭТОМУ ШАБЛОНУ (без лишних слов, вступлений и форматирования):\n"
+                  f"На сегодня осталось:\n"
+                  f"к - [число]\n"
+                  f"б - [число]\n"
+                  f"ж - [число]\n"
+                  f"у - [число]")
+        try:
+            res = await ask_ai(text_prompt=prompt)
+            await wait_msg.edit_text(res)
+        except Exception:
+            await wait_msg.delete()
 
 # --- НОВАЯ КНОПКА: ПОПРАВИТЬ РАСЧЕТ ---
 @dp.callback_query(F.data == "edit_food")
 async def edit_food_request(callback: CallbackQuery, state: FSMContext):
-    await callback.message.edit_text("✏️ Напиши текстом, что нужно исправить (например: 'это кофе, а не чай, и там 2 ложки сахара'):")
+    data = await state.get_data()
+    
+    # 💡 ИСПРАВЛЕНИЕ: Достаем прошлый расчет и сохраняем его в память, чтобы ИИ не забыл состав
+    current_ctx = data.get("current_context", "")
+    last_res = data.get("last_ai_response", "")
+    updated_ctx = f"{current_ctx}. Твой прошлый расчет: {last_res}."
+    
+    await state.update_data(current_context=updated_ctx)
+    
+    await callback.message.edit_text(
+            "✏️ Напиши текстом, что нужно исправить (например: 'это кофе, а не чай, и там 2 ложки сахара').\n\n"
+            "💡 *Если знаете, напишите точный вес — это поможет нам рассчитать всё максимально точно!*",
+            parse_mode="Markdown"
+        )
     await state.set_state(BotStates.waiting_for_clarification)
 
 # --- ФОТО И УТОЧНЕНИЯ ---
