@@ -170,7 +170,7 @@ async def cmd_start(message: Message, state: FSMContext):
         "💡 *Лайфхак:* чтобы я максимально точно определял вес порции, всегда старайся класть рядом с тарелкой вилку, ложку или монету для масштаба!",
         parse_mode="Markdown"
     )
-    else:
+     else:
         await message.answer(f"Привет, {user_name}! 👋 Давай настроим твой профиль.\nУкажи свой пол:", reply_markup=gender_kb)
         await state.set_state(ProfileStates.gender)
 
