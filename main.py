@@ -65,7 +65,7 @@ main_menu = ReplyKeyboardMarkup(
         [KeyboardButton(text="❌ Сбросить шаг")]
     ],
     resize_keyboard=True,
-    is_persistent=True,  # 👈 Меню приклеено намертво
+    is_persistent=True,
     input_field_placeholder="Выбери действие..."
 )
 
@@ -125,17 +125,14 @@ async def ask_ai(image_base64=None, text_prompt=None, context=""):
     return response.choices[0].message.content
 
 def calculate_norm(gender, age, height, weight, goal, activity):
-    # 1. Считаем базовый обмен (BMR)
     if gender == 'M': 
         bmr = (10 * weight) + (6.25 * height) - (5 * age) + 5
     else: 
         bmr = (10 * weight) + (6.25 * height) - (5 * age) - 161
         
-    # 2. Считаем норму поддержки с учетом активности
     act_mults = {"Низкая": 1.2, "Средняя": 1.55, "Высокая": 1.725}
     tdee = bmr * act_mults.get(activity, 1.2)
     
-    # 3. Применяем цели и ставим "защиту" от слишком сильного дефицита
     final_norm = tdee
     if goal == "Похудение": 
         final_norm = tdee * 0.8
@@ -391,13 +388,8 @@ async def handle_photo(message: Message, state: FSMContext):
     try:
         await state.clear()
         
-        # Пытаемся получить информацию о фото
         file = await bot.get_file(message.photo[-1].file_id)
-        
-        # Пытаемся скачать само фото
         d_file = await bot.download_file(file.file_path)
-        
-        # Пытаемся перевести его в текстовый формат
         encoded_photo = base64.b64encode(d_file.read()).decode('utf-8')
         
         await state.update_data(saved_photo=encoded_photo, photo_caption=message.caption or "")
@@ -414,16 +406,7 @@ async def process_photo_status(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text("⏳ Нейросеть изучает фото...")
     data = await state.get_data()
     st = "СЫРЫЕ ПРОДУКТЫ" if callback.data == "status_raw" else "ГОТОВОЕ БЛЮДО"
-    if "УТОЧНИТЬ:" in res:
-            question = res.replace("**УТОЧНИТЬ:**", "").replace("УТОЧНИТЬ:", "").strip()
-            await callback.message.edit_text(f"🤔 {question}\n\n(Напиши ответ текстом)")
-            
-            # 💡 ИСПРАВЛЕНИЕ: Теперь бот запоминает свой вопрос!
-            new_st = st + f". Бот спросил: {question}"
-            await state.update_data(current_context=new_st)
-            
-            await state.set_state(BotStates.waiting_for_clarification)
-            return
+    if data.get("photo_caption"): st += f". Коммент: {data['photo_caption']}"
     
     try:
         res = await ask_ai(image_base64=data.get("saved_photo"), context=st)
@@ -432,11 +415,14 @@ async def process_photo_status(callback: CallbackQuery, state: FSMContext):
         if "УТОЧНИТЬ:" in res:
             question = res.replace("**УТОЧНИТЬ:**", "").replace("УТОЧНИТЬ:", "").strip()
             await callback.message.edit_text(f"🤔 {question}\n\n(Напиши ответ текстом)")
-            await state.update_data(current_context=st)
+            
+            # Сохраняем вопрос, чтобы бот не ушел в цикл
+            new_st = st + f". Бот спросил: {question}"
+            await state.update_data(current_context=new_st)
+            
             await state.set_state(BotStates.waiting_for_clarification)
             return
 
-        # Финальный расчет с двумя кнопками (Дневник и Правка)
         await state.update_data(last_ai_response=res)
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="➕ Записать в дневник", callback_data="save_to_diary")],
@@ -462,13 +448,11 @@ async def process_clarification(message: Message, state: FSMContext):
             question = res.replace("**УТОЧНИТЬ:**", "").replace("УТОЧНИТЬ:", "").strip()
             await msg.edit_text(f"🤔 {question}\n\n(Напиши ответ текстом)")
             
-            # 💡 ИСПРАВЛЕНИЕ: Запоминаем следующий вопрос
+            # Сохраняем вопрос, чтобы бот не ушел в цикл
             new_ctx = new_context + f". Бот спросил: {question}"
             await state.update_data(current_context=new_ctx)
-            
             return
 
-        # Финальный расчет с двумя кнопками (Дневник и Правка)
         await state.update_data(last_ai_response=res)
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="➕ Записать в дневник", callback_data="save_to_diary")],
