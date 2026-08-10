@@ -398,14 +398,6 @@ async def process_photo_status(callback: CallbackQuery, state: FSMContext):
     except Exception:
         await callback.message.edit_text("Ошибка при обработке фото.")
         await state.clear()
-    
-    try:
-        await state.update_data(last_ai_response=res)
-        await callback.message.edit_text(res, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="➕ Записать в дневник", callback_data="save_to_diary")]]))
-        await state.set_state(None)
-    except Exception:
-        await callback.message.edit_text("Ошибка.")
-        await state.clear()
 
 @dp.message(BotStates.waiting_for_clarification)
 async def process_clarification(message: Message, state: FSMContext):
