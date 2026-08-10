@@ -65,7 +65,7 @@ main_menu = ReplyKeyboardMarkup(
         [KeyboardButton(text="❌ Сбросить шаг")]
     ],
     resize_keyboard=True,
-    is_persistent=True,  # 👈 Вот эта новая строчка!
+    is_persistent=True,  # 👈 Меню приклеено намертво
     input_field_placeholder="Выбери действие..."
 )
 
@@ -94,17 +94,18 @@ extra_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="🛑 СТРОГО из моего списка", callback_data="extra_no")]
 ])
 
-# ЖЕСТКОЕ ПРАВИЛО ДЛЯ КРАСИВОГО ТЕКСТА (ДЛЯ АРТЕМА)
+# --- ЖЕСТКОЕ ПРАВИЛО ДЛЯ ИИ ---
 SYSTEM_PROMPT = """Ты — профессиональный ИИ-нутрициолог. 
 ТВОЕ ГЛАВНОЕ ПРАВИЛО: НИКАКИХ ПОЛОТЕН ТЕКСТА! Всегда структурируй свой ответ. 
 СТРОГОЕ ПРАВИЛО ФОРМАТИРОВАНИЯ: КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО использовать символ решетки `#` для заголовков! Используй только звездочки `**текст**` для выделения жирным и эмодзи.
 ВАЖНОЕ ПРАВИЛО ПО ЦИФРАМ: НИКАКИХ ДИАПАЗОНОВ! Выдавай только ОДНО точное число для веса, калорий и БЖУ (например, пиши не 15-20 г, а ровно 18 г).
 
 ЕСЛИ СЧИТАЕШЬ ФОТО ИЛИ ЕДУ: 
-1. Если на фото блюдо с закрытой начинкой (блины, пирожки), задай МАКСИМУМ ОДИН вопрос только про главную начинку. Начни ответ со слова "УТОЧНИТЬ:". 
-2. После того как пользователь ответил на первый вопрос, БОЛЬШЕ НИЧЕГО НЕ СПРАШИВАЙ!
-3. Если ты не знаешь точный вес, размер порции или мелкие добавки — НЕ СПРАШИВАЙ! Просто визуально оцени объем, используй средние стандартные значения и СРАЗУ выдавай финальный расчет.
-4. Если всё понятно, выдай красивый и четкий расчет."""
+1. Если на фото блюдо с закрытой начинкой (блины, пирожки) ИЛИ напиток/блюдо, где могут быть скрытые калории (сахар, сироп, масло, соус) — ОБЯЗАТЕЛЬНО задай один уточняющий вопрос (например: "Добавлял(а) сахар? Если да — сколько ложек?").
+2. Если модель не уверена в типе напитка или блюда (например, кофе это или чай), начни с вопроса: "Правильно ли я определил, что это...".
+3. Все свои вопросы ВСЕГДА начинай со слова "УТОЧНИТЬ:". После ответа пользователя БОЛЬШЕ НИЧЕГО НЕ СПРАШИВАЙ и выдавай расчет.
+4. Если скрытых добавок точно нет и всё понятно визуально — сразу выдавай красивый и четкий расчет без вопросов."""
+
 async def ask_ai(image_base64=None, text_prompt=None, context=""):
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     
@@ -137,13 +138,13 @@ def calculate_norm(gender, age, height, weight, goal, activity):
     final_norm = tdee
     if goal == "Похудение": 
         final_norm = tdee * 0.8
-        # Тот самый ограничитель Артема: если дефицит меньше базы, выдаем базу
         if final_norm < bmr:
             final_norm = bmr
     elif goal == "Набор массы": 
         final_norm = tdee * 1.2
         
     return int(final_norm)
+
 def get_user_profile(user_id):
     doc = db.collection('users').document(str(user_id)).get()
     return doc.to_dict() if doc.exists else None
@@ -263,7 +264,11 @@ async def cheat_meal_start(message: Message, state: FSMContext):
 async def cheat_meal_process(message: Message, state: FSMContext):
     data = get_user_profile(message.from_user.id)
     msg = await message.answer("⏳ Считаю калории и подбираю варианты...")
-    prompt = f"Пользователь хочет съесть: '{message.text}'. Его дневная норма: {data['norm']} ккал ({data['goal']}). Оцени примерную калорийность этой вкусняшки. Затем предложи легкий вариант обеда или ужина, который поможет компенсировать эти калории."
+    prompt = (f"Пользователь хочет: '{message.text}'. Его норма: {data['norm']} ккал ({data['goal']}).\n"
+              f"ОТВЕТЬ СТРОГО ПО ШАБЛОНУ:\n"
+              f"**🍩 Оценка вкусняшки:**\n(Примерно ... ккал и почему это ок)\n\n"
+              f"**🥗 Как компенсируем:**\n(Предложи 1 конкретный легкий вариант обеда/ужина с граммовками, чтобы вписаться в норму)\n\n"
+              f"**📊 КБЖУ компенсации:** (цифры)")
     try:
         res = await ask_ai(text_prompt=prompt)
         await msg.edit_text(res)
@@ -319,7 +324,13 @@ async def process_extra_permission(callback: CallbackQuery, state: FSMContext):
     data = get_user_profile(callback.from_user.id)
     s_data = await state.get_data()
     ex = "РАЗРЕШЕНО добавлять базу." if callback.data == "extra_yes" else "СТРОГО ЗАПРЕЩЕНО добавлять чужие ингредиенты."
-    prompt = f"Составь меню на 1 прием пищи. Цель {data['goal']}, норма {data['norm']} ккал. Ингредиенты: {s_data.get('user_ingredients')}. {ex} Напиши рецепт и граммовки. Выведи КБЖУ."
+    prompt = (f"Составь меню на 1 прием пищи. Цель {data['goal']}, норма {data['norm']} ккал. "
+              f"Ингредиенты: {s_data.get('user_ingredients')}. {ex}\n"
+              f"ОТВЕТЬ СТРОГО ПО ШАБЛОНУ:\n"
+              f"**🍽 Название блюда**\n\n"
+              f"**🛒 Ингредиенты:**\n- (список с граммовками)\n\n"
+              f"**👨‍🍳 Рецепт:**\n1. (шаги)\n\n"
+              f"**📊 КБЖУ порции:**\n(точные цифры калорий и БЖУ)")
     try:
         res = await ask_ai(text_prompt=prompt)
         await state.update_data(last_ai_response=f"🍽 По рецепту:\n{res}")
@@ -344,7 +355,15 @@ async def show_diary(message: Message):
         return await message.answer(f"Дневник пуст! Отправь фото. (Цель: {data['norm']} ккал)", reply_markup=main_menu)
     meals = doc.to_dict().get('meals', [])
     msg = await message.answer("📊 Считаю итоги за сегодня...")
-    prompt = f"Съедено:\n{chr(10).join(meals)}\nСделай отчет, итог КБЖУ. МОЯ НОРМА: {data['norm']} ккал. Сколько осталось?"
+    prompt = (f"Съедено:\n{chr(10).join(meals)}\n"
+              f"МОЯ НОРМА: {data['norm']} ккал. Сделай красивый отчет.\n"
+              f"ОТВЕТЬ СТРОГО ПО ШАБЛОНУ:\n"
+              f"**📊 Итог за сегодня**\n\n"
+              f"**🍽 Съедено:** ... ккал\n"
+              f"**🎯 Норма:** {data['norm']} ккал\n"
+              f"**⚖️ Осталось:** ... ккал\n\n"
+              f"**🥩 Б:** ... г | **🧈 Ж:** ... г | **🥖 У:** ... г\n\n"
+              f"(Короткий подбадривающий комментарий от нутрициолога на 1-2 предложения)")
     try:
         await msg.edit_text(await ask_ai(text_prompt=prompt))
     except Exception:
@@ -358,6 +377,12 @@ async def save_to_diary(callback: CallbackQuery, state: FSMContext):
     db.collection('diaries').document(get_today_doc_id(callback.from_user.id)).set({'meals': firestore.ArrayUnion([record])}, merge=True)
     await callback.message.edit_reply_markup(reply_markup=None)
     await callback.message.answer("✅ Записано в дневник!")
+
+# --- НОВАЯ КНОПКА: ПОПРАВИТЬ РАСЧЕТ ---
+@dp.callback_query(F.data == "edit_food")
+async def edit_food_request(callback: CallbackQuery, state: FSMContext):
+    await callback.message.edit_text("✏️ Напиши текстом, что нужно исправить (например: 'это кофе, а не чай, и там 2 ложки сахара'):")
+    await state.set_state(BotStates.waiting_for_clarification)
 
 # --- ФОТО И УТОЧНЕНИЯ ---
 @dp.message(F.photo)
@@ -379,7 +404,6 @@ async def handle_photo(message: Message, state: FSMContext):
         await message.answer("Уточни статус продукта:", reply_markup=status_keyboard)
         
     except Exception as e:
-        # Если что-то ломается, бот напишет точную причину прямо в чат!
         print(f"❌ ОШИБКА ПРИ ЗАГРУЗКЕ ФОТО: {e}")
         await message.answer(f"Техническая ошибка скачивания: {e}")
 
@@ -395,7 +419,6 @@ async def process_photo_status(callback: CallbackQuery, state: FSMContext):
         res = await ask_ai(image_base64=data.get("saved_photo"), context=st)
         if await state.get_state() != BotStates.waiting_for_status.state: return 
         
-        # 💡 ИСПРАВЛЕННЫЙ БЛОК: Ищем слово УТОЧНИТЬ в тексте, даже если ИИ добавил звездочки
         if "УТОЧНИТЬ:" in res:
             question = res.replace("**УТОЧНИТЬ:**", "").replace("УТОЧНИТЬ:", "").strip()
             await callback.message.edit_text(f"🤔 {question}\n\n(Напиши ответ текстом)")
@@ -403,9 +426,12 @@ async def process_photo_status(callback: CallbackQuery, state: FSMContext):
             await state.set_state(BotStates.waiting_for_clarification)
             return
 
-        # Если это не вопрос, а готовый расчет, то выдаем его и кнопку дневника
+        # Финальный расчет с двумя кнопками (Дневник и Правка)
         await state.update_data(last_ai_response=res)
-        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="➕ Записать в дневник", callback_data="save_to_diary")]])
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="➕ Записать в дневник", callback_data="save_to_diary")],
+            [InlineKeyboardButton(text="✏️ Поправить расчет", callback_data="edit_food")]
+        ])
         await callback.message.edit_text(res, reply_markup=kb)
         await state.set_state(None)
         
@@ -422,27 +448,24 @@ async def process_clarification(message: Message, state: FSMContext):
     try:
         res = await ask_ai(image_base64=data.get("saved_photo"), context=new_context)
         
-        # 💡 ИСПРАВЛЕНИЕ: Если нейросеть задает ВТОРОЙ (или третий) уточняющий вопрос
         if "УТОЧНИТЬ:" in res:
             question = res.replace("**УТОЧНИТЬ:**", "").replace("УТОЧНИТЬ:", "").strip()
             await msg.edit_text(f"🤔 {question}\n\n(Напиши ответ текстом)")
             await state.update_data(current_context=new_context)
-            # Состояние НЕ сбрасываем, ждем следующий текстовый ответ
             return
 
-        # Если вопросов больше нет и это финальный расчет — выдаем кнопку
+        # Финальный расчет с двумя кнопками (Дневник и Правка)
         await state.update_data(last_ai_response=res)
-        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="➕ Записать в дневник", callback_data="save_to_diary")]])
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="➕ Записать в дневник", callback_data="save_to_diary")],
+            [InlineKeyboardButton(text="✏️ Поправить расчет", callback_data="edit_food")]
+        ])
         await msg.edit_text(res, reply_markup=kb)
         await state.set_state(None)
         
     except Exception:
         await msg.edit_text("Ошибка при пересчете.")
         await state.clear()
-
-# --- СЕРВЕР ---
-async def health_check(request):
-    return web.Response(text="Bot is running!")
 
 # --- УТРЕННЯЯ РАССЫЛКА ---
 async def send_morning_reminders():
@@ -454,7 +477,6 @@ async def send_morning_reminders():
     for doc in users_ref:
         user_id = doc.id
         try:
-            # Отправляем сообщение каждому пользователю в базе
             await bot.send_message(
                 chat_id=user_id, 
                 text="☀️ Доброе утро! Готов посчитать твои калории.\nЖду фото твоего завтрака! 🍳", 
@@ -468,9 +490,7 @@ async def health_check(request):
     return web.Response(text="Bot is running!")
 
 async def main():
-    # Настраиваем таймер
     scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
-    # Ставим рассылку каждый день в 09:00 утра
     scheduler.add_job(send_morning_reminders, trigger=CronTrigger(hour=9, minute=0))
     scheduler.start()
 
