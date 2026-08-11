@@ -554,38 +554,38 @@ async def send_morning_reminders():
             )
         except Exception as e:
             print(f"❌ Не удалось отправить сообщение пользователю {user_id}: {e}")
-            async def send_weekly_summary():
-    if not db: return
-    print("📊 Запуск еженедельных итогов...")
-    users_ref = db.collection('users').stream()
-    today = datetime.now()
-    
-    for doc in users_ref:
-        user_id = doc.id
-        user_data = doc.to_dict()
-        if 'norm' not in user_data: continue
+ async def send_weekly_summary():
+        if not db: return
+        print("📊 Запуск еженедельных итогов...")
+        users_ref = db.collection('users').stream()
+        today = datetime.now()
         
-        diary_entries = []
-        for i in range(7):
-            date_str = (today - timedelta(days=i)).strftime("%Y-%m-%d")
-            diary_doc = db.collection('diaries').document(f"{user_id}_{date_str}").get()
-            if diary_doc.exists and diary_doc.to_dict().get('meals'):
-                meals_text = "\n".join(diary_doc.to_dict().get('meals'))
-                diary_entries.append(f"--- День {date_str} ---\n{meals_text}")
-                
-        if not diary_entries:
-            continue
+        for doc in users_ref:
+            user_id = doc.id
+            user_data = doc.to_dict()
+            if 'norm' not in user_data: continue
             
-        all_text = "\n\n".join(diary_entries)
-        prompt = (f"Выгрузка дневника питания за неделю:\n{all_text}\n\n"
-                  f"Норма юзера: {user_data['norm']} ккал/день. \n"
-                  f"Проанализируй неделю. Если суммарно был сильный перебор калорий — мягко поддержи, "
-                  f"категорически запрети голодовки и скажи возвращаться к обычной норме. Если всё ок — похвали.")
-        try:
-            res = await ask_ai(text_prompt=prompt)
-            await bot.send_message(chat_id=user_id, text=f"📊 **Твои итоги недели!**\n\n{res}")
-        except Exception as e:
-            print(f"Ошибка отправки итогов: {e}")
+            diary_entries = []
+            for i in range(7):
+                date_str = (today - timedelta(days=i)).strftime("%Y-%m-%d")
+                diary_doc = db.collection('diaries').document(f"{user_id}_{date_str}").get()
+                if diary_doc.exists and diary_doc.to_dict().get('meals'):
+                    meals_text = "\n".join(diary_doc.to_dict().get('meals'))
+                    diary_entries.append(f"--- День {date_str} ---\n{meals_text}")
+                    
+            if not diary_entries:
+                continue
+                
+            all_text = "\n\n".join(diary_entries)
+            prompt = (f"Выгрузка дневника питания за неделю:\n{all_text}\n\n"
+                      f"Норма юзера: {user_data['norm']} ккал/день. \n"
+                      f"Проанализируй неделю. Если суммарно был сильный перебор калорий — мягко поддержи, "
+                      f"категорически запрети голодовки и скажи возвращаться к обычной норме. Если всё ок — похвали.")
+            try:
+                res = await ask_ai(text_prompt=prompt)
+                await bot.send_message(chat_id=user_id, text=f"📊 **Твои итоги недели!**\n\n{res}")
+            except Exception as e:
+                print(f"Ошибка отправки итогов: {e}")
 
 # --- СЕРВЕР И ЗАПУСК ---
 async def health_check(request):
