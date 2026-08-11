@@ -592,29 +592,37 @@ async def health_check(request):
     return web.Response(text="Bot is running!")
 
 async def main():
-    scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
-    scheduler.add_job(send_morning_reminders, trigger=CronTrigger(hour=6, minute=0))
-    scheduler.start()
+    try:
+        print("⏳ 1. Настройка планировщика...")
+        scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
+        scheduler.add_job(send_morning_reminders, trigger=CronTrigger(hour=9, minute=0))
+        scheduler.add_job(send_weekly_summary, trigger=CronTrigger(day_of_week='sun', hour=20, minute=0))
+        scheduler.start()
 
-    app = web.Application()
-    app.router.add_get('/', health_check)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', int(os.environ.get("PORT", 8080)))
-    await site.start()
-    await dp.start_polling(bot)
+        print("⏳ 2. Запуск веб-сервера для Render...")
+        app = web.Application()
+        app.router.add_get('/', health_check)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        port = int(os.environ.get("PORT", 8080))
+        site = web.TCPSite(runner, '0.0.0.0', port)
+        await site.start()
+        print(f"✅ Веб-сервер запущен на порту {port}")
+
+        print("⏳ 3. Очистка старых подключений Telegram...")
+        # Эта строчка спасает от 90% тихих вылетов при перезапусках!
+        await bot.delete_webhook(drop_pending_updates=True)
+
+        print("⏳ 4. Запуск бота (поллинг)...")
+        await dp.start_polling(bot)
+        
+    except Exception as e:
+        print(f"❌ КРИТИЧЕСКАЯ ОШИБКА ПРИ ЗАПУСКЕ: {e}")
 
 if __name__ == "__main__":
-  async def main():
-    scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
-    scheduler.add_job(send_morning_reminders, trigger=CronTrigger(hour=9, minute=0)) # Утро каждый день
-    scheduler.add_job(send_weekly_summary, trigger=CronTrigger(day_of_week='sun', hour=20, minute=0)) # Вечер воскресенья
-    scheduler.start()
-
-    app = web.Application()
-    app.router.add_get('/', health_check)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', int(os.environ.get("PORT", 8080)))
-    await site.start()
-    await dp.start_polling(bot)
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("🛑 Бот остановлен вручную.")
+    except Exception as e:
+        print(f"❌ СИСТЕМНАЯ ОШИБКА: {e}")
