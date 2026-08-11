@@ -578,7 +578,7 @@ async def health_check(request):
 
 async def main():
     scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
-    scheduler.add_job(send_morning_reminders, trigger=CronTrigger(hour=9, minute=0))
+    scheduler.add_job(send_morning_reminders, trigger=CronTrigger(hour=6, minute=0))
     scheduler.start()
 
     app = web.Application()
