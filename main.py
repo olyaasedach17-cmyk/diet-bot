@@ -370,31 +370,41 @@ async def show_diary(message: Message):
     user_id = str(message.from_user.id)
     data = get_user_profile(user_id)
     if not data: return await message.answer("Заполни профиль (/start).")
+    
     doc = db.collection('diaries').document(get_today_doc_id(user_id)).get()
     if not doc.exists or not doc.to_dict().get('meals'):
         return await message.answer(f"Дневник пуст! Отправь фото. (Цель: {data['norm']} ккал)", reply_markup=main_menu)
+        
     meals = doc.to_dict().get('meals', [])
-    msg = await message.answer("📊 Считаю итоги за сегодня...")
-    prompt = (f"Съедено:\n{chr(10).join(meals)}\n"
+    msg = await message.answer("📊 Собираю список съеденного за сегодня...")
+    
+    # Меняем промпт: заставляем ИИ выписать список еды
+    prompt = (f"Вот все мои приемы пищи за сегодня:\n{chr(10).join(meals)}\n\n"
               f"МОЯ НОРМА: {data['norm']} ккал. Сделай красивый отчет.\n"
-              f"ОТВЕТЬ СТРОГО ПО ШАБЛОНУ:\n"
+              f"ОТВЕТЬ СТРОГО ПО ШАБЛОНУ (без лишних вступлений):\n"
               f"**📊 Итог за сегодня**\n\n"
-              f"**🍽 Съедено:** ... ккал\n"
+              f"**🍽 Что съедено:**\n"
+              f"(Здесь кратко перечисли названия блюд списком, без граммовок и бжу, только суть, например: '- Яичница с беконом (09:15)')\n\n"
+              f"**🔥 Всего калорий:** ... ккал\n"
               f"**🎯 Норма:** {data['norm']} ккал\n"
               f"**⚖️ Осталось:** ... ккал\n\n"
               f"**🥩 Б:** ... г | **🧈 Ж:** ... г | **🥖 У:** ... г\n\n"
-              f"(Короткий подбадривающий комментарий от нутрициолога на 1-2 предложения)")
+              f"(Короткий подбадривающий комментарий от нутрициолога на 1 предложение)")
     try:
-        await msg.edit_text(await ask_ai(text_prompt=prompt))
+        res = await ask_ai(text_prompt=prompt)
+        await msg.edit_text(res)
     except Exception:
-        await msg.edit_text("Ошибка.")
+        await msg.edit_text("Произошла ошибка при формировании дневника.")
 
 @dp.callback_query(F.data == "save_to_diary")
 async def save_to_diary(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     if not data.get("last_ai_response"): return await callback.answer("Нечего сохранять!", show_alert=True)
     
-    record = f"⏰ {datetime.now().strftime('%H:%M:%S')}\n{data['last_ai_response']}"
+    # Достаем текст с рассчитанной едой
+    saved_text = data['last_ai_response'] 
+    
+    record = f"⏰ {datetime.now().strftime('%H:%M:%S')}\n{saved_text}"
     user_id = str(callback.from_user.id)
     doc_id = get_today_doc_id(user_id)
     
@@ -408,7 +418,34 @@ async def save_to_diary(callback: CallbackQuery, state: FSMContext):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="↩️ Отменить эту запись", callback_data="undo_diary")]
     ])
-    await callback.message.edit_text("✅ Записано в дневник!", reply_markup=kb)
+    
+    # 💡 ИСПРАВЛЕНИЕ: Оставляем текст блюда на экране и добавляем галочку сверху
+    await callback.message.edit_text(f"✅ **Записано в дневник!**\n\n{saved_text}", reply_markup=kb)
+
+    # --- Подсчет остатка КБЖУ на сегодня ---
+    user_data = get_user_profile(user_id)
+    if user_data:
+        doc = db.collection('diaries').document(doc_id).get()
+        meals = doc.to_dict().get('meals', [])
+        
+        wait_msg = await callback.message.answer("⏳ Считаю остаток КБЖУ...")
+        
+        prompt = (f"Вот все мои приемы пищи за сегодня:\n{chr(10).join(meals)}\n\n"
+                  f"Моя норма: {user_data['norm']} ккал. \n"
+                  f"1. Посчитай сумму съеденного КБЖУ.\n"
+                  f"2. Вычисли мою норму БЖУ от калорий (30% белки, 30% жиры, 40% углеводы).\n"
+                  f"3. Вычти съеденное из нормы.\n"
+                  f"ОТВЕТЬ СТРОГО ПО ЭТОМУ ШАБЛОНУ (без лишних слов, вступлений и форматирования):\n"
+                  f"На сегодня осталось:\n"
+                  f"к - [число]\n"
+                  f"б - [число]\n"
+                  f"ж - [число]\n"
+                  f"у - [число]")
+        try:
+            res = await ask_ai(text_prompt=prompt)
+            await wait_msg.edit_text(res)
+        except Exception:
+            await wait_msg.delete()
 
     # --- НОВЫЙ БЛОК: Считаем остаток КБЖУ на сегодня ---
     user_data = get_user_profile(user_id)
