@@ -57,16 +57,19 @@ class ProfileStates(StatesGroup):
     new_weight = State()
 
 # --- КЛАВИАТУРЫ ---
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+
+# --- КЛАВИАТУРЫ ---
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+
 main_menu = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="🍎 Меню из того что есть"), KeyboardButton(text="🛒 Список на неделю")],
-        [KeyboardButton(text="📊 Мой дневник"), KeyboardButton(text="📈 Итоги недели")],
-        [KeyboardButton(text="🍩 Хочу вкусняшку!"), KeyboardButton(text="👤 Мой профиль")],
-        [KeyboardButton(text="❌ Сбросить шаг")]
+        [KeyboardButton(text="📊 Мой дневник"), KeyboardButton(text="👤 Мой профиль")],
+        [KeyboardButton(text="🍩 Хочу вкусняшку!"), KeyboardButton(text="🍎 Меню из того что есть")],
+        [KeyboardButton(text="ℹ️ Инструкция"), KeyboardButton(text="❌ Сбросить шаг")]
     ],
     resize_keyboard=True,
-    is_persistent=True,
-    input_field_placeholder="Выбери действие..."
+    input_field_placeholder="Жду фото еды или команду..."
 )
 
 gender_kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -257,30 +260,22 @@ async def save_new_weight(message: Message, state: FSMContext):
 async def cancel_action(message: Message, state: FSMContext):
     await state.clear()
     await message.answer("🔄 Шаг отменен. Жду фото или команду из меню!", reply_markup=main_menu)
-
+@dp.message(F.text == "ℹ️ Инструкция")
+async def show_instructions(message: Message):
+    instruction_text = (
+        "🤖 **Как пользоваться ботом? Всё очень просто!**\n\n"
+        "📸 **Как записать еду:**\n"
+        "Отправь мне фото тарелки или напиши текстом. Я сам всё посчитаю и добавлю в дневник.\n\n"
+        "📊 **Мой дневник:**\n"
+        "Покажет, сколько калорий и БЖУ ты съел за сегодня.\n\n"
+        "❌ **Сбросить шаг:**\n"
+        "Нужна, чтобы прервать диалог. Например, если я спросил вес, а ты передумал.\n\n"
+        "↩️ **Отменить эту запись:**\n"
+        "Появляется сразу после расчета еды. Жми, если хочешь удалить блюдо из дневника.\n\n"
+        "💡 *Совет: Если я дотошно спрашиваю рецепт покупной еды, просто ответь «Не знаю», и я посчитаю по средним значениям!*"
+    )
+    await message.answer(instruction_text)
 # --- НОВЫЕ ФИШКИ ---
-@dp.message(F.text == "🛒 Список на неделю")
-async def weekly_grocery_list(message: Message):
-    data = get_user_profile(message.from_user.id)
-    if not data: return await message.answer("Сначала заполни профиль (/start).")
-    msg = await message.answer("⏳ Составляю меню на 5 дней и сводный список продуктов. Это займет около 15-20 секунд...")
-    prompt = prompt = (
-            f"Составь меню на 5 дней. Твоя главная математическая цель: сумма калорий за каждый день должна быть строго {norm} ккал (погрешность максимум 50 ккал).\n\n"
-            "🚨 КРИТИЧЕСКОЕ ПРАВИЛО: Не используй стандартные мелкие порции из интернета! Если норма большая, ты ОБЯЗАН увеличивать вес круп (в сухом виде), мяса, добавлять оливковое масло, сыр, орехи и авокадо так, чтобы математически набрать нужную норму калорий. \n\n"
-            "Выводи меню СТРОГО по такому шаблону для каждого дня:\n"
-            "**День [Номер]** (Итого за день: [сумма] ккал | Б:[сумма] Ж:[сумма] У:[сумма])\n"
-            "- Завтрак ([сумма] ккал): [Название блюда]. Ингредиенты: [название] - [вес]г, ...\n"
-            "- Обед ([сумма] ккал): [Название блюда]. Ингредиенты: [название] - [вес]г, ...\n"
-            "- Ужин ([сумма] ккал): [Название блюда]. Ингредиенты: [название] - [вес]г, ...\n"
-            "(Если нужен перекус для добора калорий — добавь его).\n\n"
-            "В конце обязательно напиши общий сводный список покупок на все 5 дней с точным весом продуктов (в граммах)."
-        )
-    try:
-        res = await ask_ai(text_prompt=prompt)
-        await msg.edit_text(res)
-    except Exception:
-        await msg.edit_text("Ошибка при составлении списка.")
-
 @dp.message(F.text == "🍩 Хочу вкусняшку!")
 async def cheat_meal_start(message: Message, state: FSMContext):
     if not get_user_profile(message.from_user.id): return await message.answer("Сначала заполни профиль (/start).")
@@ -294,43 +289,40 @@ async def cheat_meal_process(message: Message, state: FSMContext):
     prompt = (f"Пользователь хочет: '{message.text}'. Его норма: {data['norm']} ккал ({data['goal']}).\n"
               f"ОТВЕТЬ СТРОГО ПО ШАБЛОНУ:\n"
               f"**🍩 Оценка вкусняшки:**\n(Примерно ... ккал и почему это ок)\n\n"
-              f"**🥗 Как компенсируем:**\n(Предложи 1 конкретный легкий вариант обеда/ужина с граммовками, чтобы вписаться в норму)\n\n"
+              f"**🥗 Как компенсируем:**\n(Предложи 1 конкретный легкий вариант обеда/ужина с граммовками)\n\n"
               f"**📊 КБЖУ компенсации:** (цифры)")
     try:
         res = await ask_ai(text_prompt=prompt)
-        await msg.edit_text(res)
+        
+        treat_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Съел, добавляем!", callback_data="add_treat")],
+            [InlineKeyboardButton(text="❌ Передумал", callback_data="cancel_treat")]
+        ])
+        
+        # ВАЖНО: сохраняем текст ответа ИИ в состояние, чтобы потом записать в дневник
+        await state.update_data(last_ai_response=res)
+        await msg.edit_text(res, reply_markup=treat_keyboard)
     except Exception:
         await msg.edit_text("Ошибка.")
     finally:
-        await state.clear()
+        await state.set_state(None)
 
-@dp.message(F.text == "📈 Итоги недели")
-async def weekly_summary(message: Message):
-    user_id = str(message.from_user.id)
-    data = get_user_profile(user_id)
-    if not data: return await message.answer("Сначала заполни профиль (/start).")
-    msg = await message.answer("📊 Собираю твой дневник за последние 7 дней...")
+@dp.callback_query(F.data == "add_treat")
+async def process_add_treat(callback: CallbackQuery, state: FSMContext):
+    state_data = await state.get_data()
+    treat_text = state_data.get("last_ai_response", "Вкусняшка")
+    user_id = str(callback.from_user.id)
     
-    today = datetime.now()
-    diary_entries = []
-    for i in range(7):
-        date_str = (today - timedelta(days=i)).strftime("%Y-%m-%d")
-        doc = db.collection('diaries').document(f"{user_id}_{date_str}").get()
-        if doc.exists and doc.to_dict().get('meals'):
-            meals_text = "\n".join(doc.to_dict().get('meals'))
-            diary_entries.append(f"--- День {date_str} ---\n{meals_text}")
-            
-    if not diary_entries:
-        return await msg.edit_text("Твой дневник за неделю пуст! Начни записывать еду, чтобы я мог сделать разбор.")
-        
-    all_text = "\n\n".join(diary_entries)
-    prompt = f"Вот выгрузка дневника питания за последние дни:\n{all_text}\n\nНорма пользователя: {data['norm']} ккал ({data['goal']}). Сделай профессиональный, но дружелюбный анализ недели. Похвали за то, что получилось хорошо. Дай 2-3 практичных совета."
-    try:
-        res = await ask_ai(text_prompt=prompt)
-        await msg.edit_text(res)
-    except Exception:
-        await msg.edit_text("Ошибка при анализе недели.")
+    # Записываем в базу
+    doc_id = get_today_doc_id(user_id)
+    record = f"⏰ {datetime.now().strftime('%H:%M:%S')}\n{treat_text}"
+    db.collection('diaries').document(doc_id).set({'meals': firestore.ArrayUnion([record])}, merge=True)
+    
+    await callback.message.edit_text("✅ Вкусняшка добавлена в дневник! 🚨 Если произошел перебор калорий — ничего страшного, не урезай порции завтра, просто возвращайся к норме!")
 
+@dp.callback_query(F.data == "cancel_treat")
+async def process_cancel_treat(callback: CallbackQuery):
+    await callback.message.edit_text("❌ Отменил. Вы молодец, что удержались!")
 # --- РЕЦЕПТЫ ИЗ ТОГО ЧТО ЕСТЬ ---
 @dp.message(F.text == "🍎 Меню из того что есть")
 async def start_menu_generation(message: Message, state: FSMContext):
@@ -562,6 +554,38 @@ async def send_morning_reminders():
             )
         except Exception as e:
             print(f"❌ Не удалось отправить сообщение пользователю {user_id}: {e}")
+            async def send_weekly_summary():
+    if not db: return
+    print("📊 Запуск еженедельных итогов...")
+    users_ref = db.collection('users').stream()
+    today = datetime.now()
+    
+    for doc in users_ref:
+        user_id = doc.id
+        user_data = doc.to_dict()
+        if 'norm' not in user_data: continue
+        
+        diary_entries = []
+        for i in range(7):
+            date_str = (today - timedelta(days=i)).strftime("%Y-%m-%d")
+            diary_doc = db.collection('diaries').document(f"{user_id}_{date_str}").get()
+            if diary_doc.exists and diary_doc.to_dict().get('meals'):
+                meals_text = "\n".join(diary_doc.to_dict().get('meals'))
+                diary_entries.append(f"--- День {date_str} ---\n{meals_text}")
+                
+        if not diary_entries:
+            continue
+            
+        all_text = "\n\n".join(diary_entries)
+        prompt = (f"Выгрузка дневника питания за неделю:\n{all_text}\n\n"
+                  f"Норма юзера: {user_data['norm']} ккал/день. \n"
+                  f"Проанализируй неделю. Если суммарно был сильный перебор калорий — мягко поддержи, "
+                  f"категорически запрети голодовки и скажи возвращаться к обычной норме. Если всё ок — похвали.")
+        try:
+            res = await ask_ai(text_prompt=prompt)
+            await bot.send_message(chat_id=user_id, text=f"📊 **Твои итоги недели!**\n\n{res}")
+        except Exception as e:
+            print(f"Ошибка отправки итогов: {e}")
 
 # --- СЕРВЕР И ЗАПУСК ---
 async def health_check(request):
@@ -581,4 +605,16 @@ async def main():
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+  async def main():
+    scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
+    scheduler.add_job(send_morning_reminders, trigger=CronTrigger(hour=9, minute=0)) # Утро каждый день
+    scheduler.add_job(send_weekly_summary, trigger=CronTrigger(day_of_week='sun', hour=20, minute=0)) # Вечер воскресенья
+    scheduler.start()
+
+    app = web.Application()
+    app.router.add_get('/', health_check)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', int(os.environ.get("PORT", 8080)))
+    await site.start()
+    await dp.start_polling(bot)
