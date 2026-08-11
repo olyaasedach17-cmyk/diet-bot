@@ -7,8 +7,6 @@ from datetime import datetime, timezone, timedelta
 
 from dotenv import load_dotenv
 from aiohttp import web
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.cron import CronTrigger
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
@@ -27,7 +25,8 @@ load_dotenv()
 
 # --- ИНИЦИАЛИЗАЦИЯ ИИ ---
 TOKEN = os.getenv('BOT_TOKEN')
-AI_MODEL = os.getenv('AI_MODEL', 'gpt-4o') 
+# По умолчанию ставим Луну, если в переменных окружения вдруг пусто
+AI_MODEL = os.getenv('AI_MODEL', 'openai/gpt-5.6-luna') 
 client = AsyncOpenAI(api_key=os.getenv('AI_API_KEY'), base_url=os.getenv('AI_BASE_URL'))
 
 # --- FIREBASE ---
@@ -129,7 +128,7 @@ async def ask_ai(image_base64=None, text_prompt=None, system_prompt="Ты AI-н�
         return res.choices[0].message.content
     except Exception as e:
         print(f"🔥 ОШИБКА ИИ: {e}")
-        return f"Ошибка связи с нейросетью: {e}"
+        return f"Ошибка связи с нейросетью. Попробуй еще раз."
 
 # ==========================================
 # 🚀 ОНБОРДИНГ
@@ -150,7 +149,7 @@ async def cmd_start(message: Message, state: FSMContext):
         "Сначала короткий опрос — <b>4 вопроса</b>, меньше минуты. Он нужен, чтобы посчитать <b>твою</b> норму, а не среднюю по больнице."
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🚀 Начать", callback_data="start_onb")]])
-    await message.answer(text, reply_markup=main_menu) # Добавляем меню сразу
+    await message.answer(text, reply_markup=main_menu) 
     await message.answer("Жми кнопку ниже 👇", reply_markup=kb)
 
 @dp.callback_query(F.data == "start_onb")
@@ -282,7 +281,7 @@ async def calc_food(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(f"{food_desc}\n\n⏳ Считаю калории...")
     
     u_data = get_user_profile(callback.from_user.id)
-    norm = u_data['norm'] if u_data else 2000
+    norm = u_data.get('norm', 2000) if u_data else 2000
     
     prompt = (
         f"Съедено: {food_desc}\nНорма: {norm} ккал.\n"
@@ -376,8 +375,10 @@ async def cmd_today(message: Message, state: FSMContext = None, user_id: str = N
         
     msg = await message.answer("⏳ Обновляю дневник...")
     meals_text = "\n\n".join(meals)
+    
+    # ИСПРАВЛЕНА ОШИБКА KEYERROR ЗДЕСЬ (используем .get)
     prompt = (
-       f"Список съеденного:\n{meals_text}\n\nНорма: {u_data.get('norm', 0)} ккал, Б:{u_data.get('p', 0)} Ж:{u_data.get('f', 0)} У:{u_data.get('c', 0)}\n"
+        f"Список съеденного:\n{meals_text}\n\nНорма: {u_data.get('norm', 0)} ккал, Б:{u_data.get('p', 0)} Ж:{u_data.get('f', 0)} У:{u_data.get('c', 0)}\n"
         "Сделай красивый дневник как на фото. Шаблон:\n"
         "[Вставь список съеденного как есть]\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
@@ -394,11 +395,11 @@ async def cmd_today(message: Message, state: FSMContext = None, user_id: str = N
 
 async def send_empty_diary(message, header, u_data):
     body = "Пока пусто. Пришли фото еды — я всё посчитаю 📸\n━━━━━━━━━━━━━━━━━━━━\n"
-    body += f"🔥 Калории <b>0</b> / {u_data['norm']} (0%)\n□□□□□□□□□□\n"
+    body += f"🔥 Калории <b>0</b> / {u_data.get('norm', 0)} (0%)\n□□□□□□□□□□\n"
     body += f"🥩 Белки <b>0</b> / {u_data.get('p', 0)} г\n□□□□□□□□□□\n"
     body += f"🥑 Жиры <b>0</b> / {u_data.get('f', 0)} г\n□□□□□□□□□□\n"
     body += f"🍚 Углеводы <b>0</b> / {u_data.get('c', 0)} г\n□□□□□□□□□□\n━━━━━━━━━━━━━━━━━━━━\n"
-    body += f"Осталось на сегодня: <b>{u_data['norm']} ккал</b>"
+    body += f"Осталось на сегодня: <b>{u_data.get('norm', 0)} ккал</b>"
     if isinstance(message, Message): await message.answer(header + body)
     else: await message.edit_text(header + body)
 
@@ -428,7 +429,7 @@ async def cmd_prof(message: Message):
 @dp.message(Command("plan"))
 async def cmd_plan(message: Message):
     u = get_user_profile(message.from_user.id)
-    if u: await message.answer(f"🎯 Твоя норма: <b>{u['norm']} ккал</b>\nБ: {u['p']}г | Ж: {u['f']}г | У: {u['c']}г")
+    if u: await message.answer(f"🎯 Твоя норма: <b>{u.get('norm', 0)} ккал</b>\nБ: {u.get('p', 0)}г | Ж: {u.get('f', 0)}г | У: {u.get('c', 0)}г")
 
 @dp.message(Command("help"))
 async def cmd_help(message: Message):
@@ -439,10 +440,12 @@ async def cmd_week(message: Message):
     await message.answer("Статистика за неделю в разработке 🚀")
 
 # --- СЕРВЕР И ЗАПУСК ---
-async def health_check(request): return web.Response(text="Bot is running!")
+async def health_check(request):
+    return web.Response(text="Я бот, я жив, не убивай меня, Timeweb!")
 
 async def main():
     try:
+        # ЗАПУСК ФЕЙКОВОГО СЕРВЕРА ДЛЯ TIMEWEB
         app = web.Application()
         app.router.add_get('/', health_check)
         runner = web.AppRunner(app)
@@ -450,6 +453,7 @@ async def main():
         port = int(os.environ.get("PORT", 8080))
         site = web.TCPSite(runner, '0.0.0.0', port)
         await site.start()
+        print(f"✅ Сервер-обманка запущен на порту {port}")
         
         # Подключаем синюю кнопку команд
         await set_bot_commands(bot)
