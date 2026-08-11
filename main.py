@@ -554,7 +554,7 @@ async def send_morning_reminders():
             )
         except Exception as e:
             print(f"❌ Не удалось отправить сообщение пользователю {user_id}: {e}")
- async def send_weekly_summary():
+async def send_weekly_summary():
         if not db: return
         print("📊 Запуск еженедельных итогов...")
         users_ref = db.collection('users').stream()
