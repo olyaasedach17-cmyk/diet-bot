@@ -3,7 +3,7 @@ import os
 import base64
 import json
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 
 from dotenv import load_dotenv
 from aiohttp import web
@@ -46,72 +46,46 @@ bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
 # --- СОСТОЯНИЯ ---
+class Onboarding(StatesGroup):
+    pace = State()
+    name = State()
+    gender = State()
+    height = State()
+    weight = State()
+    age = State()
+    body_type = State()
+    goal = State()
+
 class BotStates(StatesGroup):
     waiting_for_edit_text = State()
-    waiting_for_menu_ingredients = State()
+    waiting_for_recipe = State()
+    waiting_for_fridge_ingredients = State()
 
-class ProfileStates(StatesGroup):
-    gender = State()
-    stats = State() # Возраст, рост, вес в одну строку
-    goal = State()
-    activity = State()
-
-# --- КЛАВИАТУРЫ (Точь-в-точь как на скринах) ---
+# --- КЛАВИАТУРЫ ---
 main_menu = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="📊 Сегодня"), KeyboardButton(text="🥗 Что приготовить")],
-        [KeyboardButton(text="⚖️ Вес"), KeyboardButton(text="👤 Профиль")]
+        [KeyboardButton(text="📸 Фото еды"), KeyboardButton(text="📊 Дневник")],
+        [KeyboardButton(text="📝 Прислать рецепт"), KeyboardButton(text="🧊 Рецепт из того что есть")]
     ],
     resize_keyboard=True,
-    input_field_placeholder="Пришли фото ед..."
+    input_field_placeholder="Выбери действие..."
 )
 
-gender_kb = InlineKeyboardMarkup(inline_keyboard=[
-    [InlineKeyboardButton(text="👨 Мужчина", callback_data="gender_M")], 
-    [InlineKeyboardButton(text="👩 Женщина", callback_data="gender_F")]
-])
-
-goal_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-    [InlineKeyboardButton(text="📉 Похудеть", callback_data="goal_loss")],
-    [InlineKeyboardButton(text="⚖️ Удержать вес", callback_data="goal_maintain")],
-    [InlineKeyboardButton(text="📈 Набрать массу", callback_data="goal_gain")]
-])
-
-activity_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-    [InlineKeyboardButton(text="🛋 Сидячий", callback_data="act_low")],
-    [InlineKeyboardButton(text="🚶‍♀️ Лёгкая (1–2 трен.)", callback_data="act_light")],
-    [InlineKeyboardButton(text="🏃‍♂️ Умеренная (3–4)", callback_data="act_med")],
-    [InlineKeyboardButton(text="🏋️‍♂️ Высокая (5–6)", callback_data="act_high")],
-    [InlineKeyboardButton(text="🏅 Спортивная (2/день)", callback_data="act_pro")]
-])
-
-# --- УТИЛИТЫ ---
-def make_progress_bar(current: float, total: float, length: int = 10) -> str:
-    if total <= 0: return "□" * length
-    percent = min(current / total, 1.0)
-    filled_length = int(length * percent)
-    return "■" * filled_length + "□" * (length - filled_length)
-
-def calculate_norm(gender, age, height, weight, goal, activity):
-    if gender == 'M': bmr = (10 * weight) + (6.25 * height) - (5 * age) + 5
-    else: bmr = (10 * weight) + (6.25 * height) - (5 * age) - 161
+# --- МАТЕМАТИКА (Кэтч-Макардл) ---
+def calculate_katch_mcardle(weight, body_fat_pct, goal):
+    lbm = weight * (1 - (body_fat_pct / 100))
+    bmr = 370 + (21.6 * lbm)
+    tdee = bmr * 1.375 
     
-    act_mults = {"act_low": 1.2, "act_light": 1.375, "act_med": 1.55, "act_high": 1.725, "act_pro": 1.9}
-    tdee = bmr * act_mults.get(activity, 1.2)
-    
-    final_norm = tdee
-    deficit_pct = 0
-    if goal == "goal_loss": 
-        final_norm = tdee * 0.78 # -22% как на скрине
-        deficit_pct = -22
-    elif goal == "goal_gain": 
-        final_norm = tdee * 1.15
-        deficit_pct = 15
+    if goal == "loss": norm = tdee * 0.85
+    elif goal == "gain": norm = tdee * 1.15
+    else: norm = tdee
         
-    return {
-        'bmr': int(bmr), 'tdee': int(tdee), 'norm': int(final_norm), 
-        'deficit': deficit_pct, 'goal_code': goal
-    }
+    p = int((norm * 0.30) / 4)
+    f = int((norm * 0.30) / 9)
+    c = int((norm * 0.40) / 4)
+    
+    return {'bmr': int(bmr), 'tdee': int(tdee), 'norm': int(norm), 'p': p, 'f': f, 'c': c}
 
 def get_user_profile(user_id):
     if not db: return None
@@ -140,111 +114,144 @@ async def ask_ai(image_base64=None, text_prompt=None, system_prompt="Ты AI-н�
     except Exception as e:
         return f"Ошибка ИИ: {e}"
 
-# --- 1. ОНБОРДИНГ (Шаг в шаг со скринами) ---
+# ==========================================
+# 🚀 ОНБОРДИНГ (МАГНИТ ДЛЯ ПРОДАЖ)
+# ==========================================
 @dp.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
     if get_user_profile(message.from_user.id):
-        await message.answer("С возвращением! Пришли фото еды — я всё посчитаю 📸", reply_markup=main_menu)
-    else:
-        # Точная копия текста со скрина
-        text = (
-            f"Привет, {message.from_user.first_name or 'друг'} 🕊! Это «Умная Тарелка» — "
-            "я <b>Артём</b>, твой нутрициолог в телефоне 🥗\n\n"
-            "Что я умею:\n"
-            "📸 считать КБЖУ по фото еды — просто сфоткай тарелку;\n"
-            "📊 вести дневник, чтобы ты не выходил за свою норму;\n"
-            "🧊 собирать меню из того, что есть в холодильнике;\n"
-            "❓ отвечать на вопросы про питание.\n\n"
-            "<b>Шаг 1 из 4</b>\nУкажи свой пол:"
-        )
-        await message.answer(text, reply_markup=gender_kb)
-        await state.set_state(ProfileStates.gender)
-
-@dp.callback_query(ProfileStates.gender, F.data.startswith("gender_"))
-async def ask_stats(callback: CallbackQuery, state: FSMContext):
-    await state.update_data(gender=callback.data.split("_")[1])
+        return await message.answer("С возвращением! Жду фото еды или команду 👇", reply_markup=main_menu)
+    
     text = (
-        "<i>Шаг 2 из 4</i>\n\n"
-        "Напиши в одну строку через пробел:\n"
-        "<b>возраст, рост в см и вес в кг.</b>\n\n"
-        "Например: 32 182 92\n"
-        "<i>Можно и словами — «мне 32, рост 182, вешу 92,4».</i>"
+        "Привет! Я <b>Артём</b> — твой AI-нутрициолог 🥗\n\n"
+        "Моя философия: мы делаем форму <b>не «к лету», а навсегда</b>. "
+        "Без жестких диет, без чувства вины за съеденную шоколадку и с полным принятием себя.\n\n"
+        "Готов(а) начать этот путь вместе со мной?"
     )
-    await callback.message.edit_text(text)
-    await state.set_state(ProfileStates.stats)
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🤝 Договор", callback_data="onb_agreement")]])
+    await message.answer(text, reply_markup=kb)
 
-@dp.message(ProfileStates.stats)
-async def process_stats(message: Message, state: FSMContext):
-    # Умный парсинг трех чисел из строки
-    numbers = re.findall(r'\d+[.,]?\d*', message.text)
-    if len(numbers) < 3:
-        return await message.answer("Не смог найти 3 цифры. Напиши просто: 32 182 92")
+@dp.callback_query(F.data == "onb_agreement")
+async def onb_pace(callback: CallbackQuery, state: FSMContext):
+    text = "Супер! Какой темп работы выберем на старте?"
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🚀 Полный вперёд", callback_data="pace_fast")],
+        [InlineKeyboardButton(text="👀 Давай понаблюдаем", callback_data="pace_slow")]
+    ])
+    await callback.message.edit_text(text, reply_markup=kb)
+
+@dp.callback_query(F.data.startswith("pace_"))
+async def onb_name(callback: CallbackQuery, state: FSMContext):
+    await state.update_data(pace=callback.data)
+    await callback.message.edit_text("Отличный настрой! Как мне к тебе обращаться? (напиши имя)")
+    await state.set_state(Onboarding.name)
+
+@dp.message(Onboarding.name)
+async def onb_gender(message: Message, state: FSMContext):
+    await state.update_data(name=message.text)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="👨 Мужской", callback_data="gender_M"), 
+         InlineKeyboardButton(text="👩 Женский", callback_data="gender_F")]
+    ])
+    await message.answer(f"Приятно познакомиться, {message.text}! Укажи свой пол:", reply_markup=kb)
+
+@dp.callback_query(F.data.startswith("gender_"))
+async def onb_height(callback: CallbackQuery, state: FSMContext):
+    await state.update_data(gender=callback.data.split("_")[1])
+    await callback.message.edit_text("Укажи свой рост (в см):")
+    await state.set_state(Onboarding.height)
+
+@dp.message(Onboarding.height)
+async def onb_weight(message: Message, state: FSMContext):
+    if not message.text.isdigit(): return await message.answer("Напиши цифрами (например, 175).")
+    await state.update_data(height=int(message.text))
+    await message.answer("Укажи свой текущий вес (в кг):")
+    await state.set_state(Onboarding.weight)
+
+@dp.message(Onboarding.weight)
+async def onb_age(message: Message, state: FSMContext):
+    try:
+        w = float(message.text.replace(',', '.'))
+        await state.update_data(weight=w)
+        await message.answer("Сколько тебе лет?")
+        await state.set_state(Onboarding.age)
+    except:
+        await message.answer("Напиши цифрами (например, 65.5).")
+
+@dp.message(Onboarding.age)
+async def onb_body_type(message: Message, state: FSMContext):
+    if not message.text.isdigit(): return await message.answer("Только цифры.")
+    await state.update_data(age=int(message.text))
     
-    age, height, weight = int(float(numbers[0].replace(',','.'))), int(float(numbers[1].replace(',','.'))), float(numbers[2].replace(',','.'))
-    await state.update_data(age=age, height=height, weight=weight)
-    
-    await message.answer("<i>Шаг 3 из 4</i>\n\nКакая <b>цель</b>?", reply_markup=goal_keyboard)
-    await state.set_state(ProfileStates.goal)
+    text = (
+        "Почти всё! Чтобы я рассчитал норму идеально точно, выбери свой тип фигуры:\n\n"
+        "1️⃣ Худощавое телосложение, минимум жира\n"
+        "2️⃣ Обычное / Спортивное телосложение\n"
+        "3️⃣ Есть заметный лишний вес / животик\n"
+        "4️⃣ Плотное телосложение / Ожирение"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="1️⃣", callback_data="body_1"), InlineKeyboardButton(text="2️⃣", callback_data="body_2")],
+        [InlineKeyboardButton(text="3️⃣", callback_data="body_3"), InlineKeyboardButton(text="4️⃣", callback_data="body_4")]
+    ])
+    await message.answer(text, reply_markup=kb)
 
-@dp.callback_query(ProfileStates.goal, F.data.startswith("goal_"))
-async def ask_act(callback: CallbackQuery, state: FSMContext):
-    await state.update_data(goal=callback.data)
-    await callback.message.edit_text("<i>Шаг 4 из 4</i>\n\nУровень активности:", reply_markup=activity_keyboard)
-    await state.set_state(ProfileStates.activity)
-
-@dp.callback_query(ProfileStates.activity, F.data.startswith("act_"))
-async def finish_profile(callback: CallbackQuery, state: FSMContext):
+@dp.callback_query(F.data.startswith("body_"))
+async def onb_goal(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    calc = calculate_norm(data['gender'], data['age'], data['height'], data['weight'], data['goal'], callback.data)
+    gender = data.get("gender")
+    b_type = callback.data.split("_")[1]
     
-    norm = calc['norm']
-    # Расчет БЖУ как на скрине (30/40/30)
-    p = int((norm * 0.27) / 4)
-    f = int((norm * 0.40) / 9)
-    c = int((norm * 0.33) / 4)
+    bf_map = {
+        'M': {'1': 12, '2': 18, '3': 25, '4': 35},
+        'F': {'1': 18, '2': 24, '3': 32, '4': 40}
+    }
+    await state.update_data(body_fat=bf_map[gender][b_type])
     
-    target_date = (datetime.now() + timedelta(days=23*7)).strftime("%Y-%m-%d")
-    goal_name = "Похудеть" if data['goal'] == 'goal_loss' else "Набрать массу" if data['goal'] == 'goal_gain' else "Удержать вес"
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📉 Сбросить вес", callback_data="goal_loss")],
+        [InlineKeyboardButton(text="⚖️ Поддержание", callback_data="goal_maintain")],
+        [InlineKeyboardButton(text="📈 Набрать массу", callback_data="goal_gain")]
+    ])
+    await callback.message.edit_text("Какая у нас глобальная цель?", reply_markup=kb)
 
+@dp.callback_query(F.data.startswith("goal_"))
+async def onb_finish(callback: CallbackQuery, state: FSMContext):
+    goal = callback.data.split("_")[1]
+    data = await state.get_data()
+    
+    calc = calculate_katch_mcardle(data['weight'], data['body_fat'], goal)
+    
     if db:
         db.collection('users').document(str(callback.from_user.id)).set({
-            'gender': data['gender'], 'age': data['age'], 'height': data['height'], 'weight': data['weight'],
-            'goal': goal_name, 'norm': norm, 'p': p, 'f': f, 'c': c
+            'name': data.get('name', 'друг'), 'gender': data['gender'], 'age': data['age'], 
+            'height': data['height'], 'weight': data['weight'], 'body_fat': data['body_fat'],
+            'goal': goal, 'norm': calc['norm'], 'p': calc['p'], 'f': calc['f'], 'c': calc['c'],
+            'created_at': firestore.SERVER_TIMESTAMP
         })
 
-    # Экран итогов (1-в-1 со скрином)
-    result_text = (
-        "🎯 <b>ТВОЯ НОРМА НА ДЕНЬ</b>\n"
-        "___\n"
-        f"🔥 <b>{norm} ккал</b>\n\n"
-        f"🥩 Белки <b>{p} г</b> 27%\n"
-        f"🥑 Жиры <b>{f} г</b> 40%\n"
-        f"🍚 Углеводы <b>{c} г</b> 33%\n"
-        "🌾 Клетчатка 24 г 💧 Вода 2.6 л\n"
-        "___\n"
-        f"Обмен покоя: <b>{calc['bmr']}</b> · расход за день: <b>{calc['tdee']}</b>\n"
-        f"Цель «{goal_name}» -> дефицит <b>{calc['deficit']}%</b>\n"
-        f"Темп ≈ <b>0.44 кг/нед</b> -> цель к <b>{target_date}</b>\n"
-        "<i>Расчёт по формуле Миффлина. Уточню его, когда определим твой процент жира — станет точнее.</i>"
+    text = (
+        f"🎉 <b>Профиль готов!</b>\n___\n"
+        f"Твоя цель: <b>{calc['norm']} ккал</b> в день.\n"
+        f"Б: {calc['p']}г | Ж: {calc['f']}г | У: {calc['c']}г\n___\n"
+        f"<i>Я рассчитал это по научному методу Кэтча-Макардла.\n\n"
+        f"Теперь мы работаем каждый день. Присылай мне фото еды, а я буду вести твои расчеты.</i> 👇"
     )
-    
-    guide_text = (
-        "📸 <b>Как пользоваться дальше</b>\n"
-        "Сфоткай тарелку — я скажу, что вижу, спрошу «верно?» и посчитаю КБЖУ.\n"
-        "Можно и словами: съел 2 яйца и кашу. А если нечего есть — пришли фото холодильника, соберу меню 🧊\n\n"
-        "<i>Остальное про тебя узнаю по ходу — буду иногда задавать по одному короткому вопросу, чтобы советы были точнее.</i>"
-    )
-    
-    await callback.message.edit_text(result_text)
-    await callback.message.answer(guide_text, reply_markup=main_menu)
+    await callback.message.edit_text(text)
+    await callback.message.answer("Главное меню:", reply_markup=main_menu)
     await state.clear()
 
+# ==========================================
+# 🍔 РАСПОЗНАВАНИЕ ЕДЫ И ДНЕВНИК
+# ==========================================
+@dp.message(F.text == "📸 Фото еды")
+async def wait_for_photo(message: Message):
+    await message.answer("Пришли мне фото твоей тарелки прямо в этот чат 📸")
 
-# --- 2. РАСПОЗНАВАНИЕ ФОТО (2 шага как на скрине) ---
 @dp.message(F.photo)
 async def handle_photo(message: Message, state: FSMContext):
-    wait_msg = await message.answer("👀 Изучаю тарелку...")
+    wait_msg = await message.answer("👀 Анализирую...")
     try:
         await state.clear()
         file = await bot.get_file(message.photo[-1].file_id)
@@ -258,7 +265,6 @@ async def handle_photo(message: Message, state: FSMContext):
             "• [ингредиент] — [вес] г\n___\n"
             "⚖️ Общий вес порции: ~[вес] г"
         )
-        
         food_desc = await ask_ai(image_base64=encoded_photo, text_prompt=prompt)
         await state.update_data(saved_photo=encoded_photo, recognized_food=food_desc)
         
@@ -267,10 +273,9 @@ async def handle_photo(message: Message, state: FSMContext):
             [InlineKeyboardButton(text="✏️ Поправить", callback_data="food_edit"),
              InlineKeyboardButton(text="❌ Не то", callback_data="food_wrong")]
         ])
-        
-        await wait_msg.edit_text(f"{food_desc}\n___\nВсё верно? После подтверждения посчитаю КБЖУ.", reply_markup=kb)
+        await wait_msg.edit_text(f"{food_desc}\n___\nВсё верно? Жду подтверждения для расчета.", reply_markup=kb)
     except Exception:
-        await wait_msg.edit_text("Ошибка. Попробуй еще раз.")
+        await wait_msg.edit_text("Ошибка распознавания.")
 
 @dp.callback_query(F.data == "food_correct")
 async def calc_food(callback: CallbackQuery, state: FSMContext):
@@ -282,24 +287,19 @@ async def calc_food(callback: CallbackQuery, state: FSMContext):
     norm = u_data['norm'] if u_data else 2000
     
     prompt = (
-        f"Пользователь подтвердил еду: {food_desc}\n"
-        f"Его норма: {norm} ккал. Посчитай КБЖУ.\n"
-        "Ответь СТРОГО по шаблону (замени скобки на цифры, добавь совет):\n"
+        f"Пользователь съел: {food_desc}\nЕго дневная норма: {norm} ккал. Посчитай КБЖУ.\n"
+        "Ответь СТРОГО по шаблону (используй HTML теги <b> и <i>):\n"
         "✅ <b>[Название блюда]</b>\n___\n"
         "• [ингредиент] <b>[вес] г</b> — [ккал] ккал\n"
         "<i>Б[белки] Ж[жиры] У[углеводы]</i>\n___\n"
-        "<b>Итого: [сумма_ккал] ккал</b> · вес порции ~[вес] г\n"
+        "<b>Итого: [сумма_ккал] ккал</b>\n"
         "<b>Б [б] · Ж [ж] · У [у]</b>\n___\n"
-        "💬 [Короткий комментарий нутрициолога. 💡 Совет]"
+        "💬 [Комментарий]"
     )
-    
     res = await ask_ai(text_prompt=prompt)
     await state.update_data(last_ai_response=res)
     
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📊 Дневник (Сохранить)", callback_data="save_to_diary")],
-        [InlineKeyboardButton(text="🗑 Удалить", callback_data="undo_diary")]
-    ])
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="➕ В дневник", callback_data="save_to_diary")]])
     await callback.message.edit_text(res, reply_markup=kb)
 
 @dp.callback_query(F.data == "food_edit")
@@ -313,14 +313,15 @@ async def process_edit(message: Message, state: FSMContext):
     wait_msg = await message.answer("⏳ Пересчитываю...")
     prompt = (
         f"Прошлый ответ: {data.get('recognized_food')}\nИсправление: {message.text}\n"
-        "Выдай новый состав СТРОГО по шаблону:\n"
+        "Выдай новый состав СТРОГО по шаблону (используй HTML теги):\n"
         "🍽 <b>[Название]</b>\n___\n• [инг] — [вес] г\n___\n⚖️ Общий вес: ~[вес] г"
     )
     new_desc = await ask_ai(text_prompt=prompt)
     await state.update_data(recognized_food=new_desc)
+    
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Всё верно", callback_data="food_correct")],
-        [InlineKeyboardButton(text="✏️ Поправить", callback_data="food_edit")]
+        [InlineKeyboardButton(text="✏️ Поправить еще", callback_data="food_edit")]
     ])
     await wait_msg.edit_text(f"{new_desc}\n___\nВсё верно? После подтверждения посчитаю КБЖУ.", reply_markup=kb)
     await state.set_state(None)
@@ -329,72 +330,145 @@ async def process_edit(message: Message, state: FSMContext):
 async def wrong_food(callback: CallbackQuery):
     await callback.message.edit_text("Понял, промахнулся 🙈 Напиши текстом или сфоткай заново.")
 
-# --- 3. ДНЕВНИК (Дизайн 1-в-1) ---
 @dp.callback_query(F.data == "save_to_diary")
 async def save_diary(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     text = data.get("last_ai_response", "")
     user_id = str(callback.from_user.id)
-    doc_id = get_today_doc_id(user_id)
     
     record = f"{datetime.now().strftime('%H:%M')} · {text.split('___')[0].replace('✅', '').strip()}"
-    if db: db.collection('diaries').document(doc_id).set({'meals': firestore.ArrayUnion([record])}, merge=True)
+    if db: 
+        db.collection('diaries').document(get_today_doc_id(user_id)).set({'meals': firestore.ArrayUnion([record])}, merge=True)
     
-    await callback.answer("Сохранено в дневник!", show_alert=False)
-    await show_diary_logic(callback.message, user_id)
+    await callback.message.edit_text(f"✅ Записано в дневник!\n\n{text}")
+    
+    u_data = get_user_profile(user_id)
+    doc = db.collection('diaries').document(get_today_doc_id(user_id)).get()
+    meals = doc.to_dict().get('meals', []) if doc.exists else []
+    
+    res = await ask_ai(text_prompt=f"Съедено сегодня: {meals}. Норма: {u_data['norm']}. Вычти сумму калорий из нормы. Напиши СТРОГО: 'Остаток на сегодня: [число] ккал.'")
+    await callback.message.answer(f"📊 {res}")
 
-@dp.message(F.text == "📊 Сегодня")
+# --- ОТОБРАЖЕНИЕ ДНЕВНИКА ---
+@dp.message(F.text == "📊 Дневник")
 async def show_diary_btn(message: Message):
-    await show_diary_logic(message, str(message.from_user.id))
-
-async def show_diary_logic(message: Message, user_id: str):
+    user_id = str(message.from_user.id)
     u_data = get_user_profile(user_id)
     if not u_data: return await message.answer("Нажми /start")
     
     doc = db.collection('diaries').document(get_today_doc_id(user_id)).get()
     meals = doc.to_dict().get('meals', []) if doc.exists else []
     
-    date_str = datetime.now().strftime("%d.%m")
-    header = f"📊 <b>ДНЕВНИК ЗА СЕГОДНЯ</b>\n<i>{date_str}</i>\n___\n"
-    
+    header = f"📊 <b>ДНЕВНИК ЗА СЕГОДНЯ</b>\n___\n"
     if not meals:
-        body = "Пока пусто. Пришли фото еды — я всё посчитаю 📸\n___\n"
-        body += f"🔥 Калории <b>0</b> / {u_data['norm']} (0%)\n□□□□□□□□□□\n"
-        body += f"🥩 Белки <b>0</b> / {u_data.get('p', 0)} г\n□□□□□□□□□□\n"
-        body += f"🥑 Жиры <b>0</b> / {u_data.get('f', 0)} г\n□□□□□□□□□□\n"
-        body += f"🍚 Углеводы <b>0</b> / {u_data.get('c', 0)} г\n□□□□□□□□□□\n___\n"
-        body += f"Осталось на сегодня: <b>{u_data['norm']} ккал</b>"
-        return await message.answer(header + body)
+        return await message.answer(header + "Пока пусто. Пришли фото еды — я всё посчитаю 📸")
         
     msg = await message.answer("⏳ Собираю дневник...")
     meals_text = "\n".join(meals)
     prompt = (
         f"Список еды: {meals_text}\nНорма: {u_data['norm']} ккал, Б:{u_data.get('p')} Ж:{u_data.get('f')} У:{u_data.get('c')}\n"
-        "Выдай отчет СТРОГО по шаблону:\n"
+        "Выдай отчет СТРОГО по шаблону (используй HTML):\n"
         "[Список еды 그대로 из текста пользователя, разделенный ___]\n___\n"
-        "🔥 Калории <b>[сумма]</b> / [норма] ([процент]%)\n[здесь 10 символов ■/□]\n"
-        "🥩 Белки <b>[сумма]</b> / [норма] г\n[здесь 10 символов ■/□]\n"
-        "🥑 Жиры <b>[сумма]</b> / [норма] г\n[здесь 10 символов ■/□]\n"
-        "🍚 Углеводы <b>[сумма]</b> / [норма] г\n[здесь 10 символов ■/□]\n___\n"
+        "🔥 Калории <b>[сумма]</b> / [норма]\n"
+        "🥩 Белки <b>[сумма]</b> / [норма] г\n"
+        "🥑 Жиры <b>[сумма]</b> / [норма] г\n"
+        "🍚 Углеводы <b>[сумма]</b> / [норма] г\n___\n"
         "Осталось на сегодня: <b>[остаток] ккал</b>"
     )
     res = await ask_ai(text_prompt=prompt)
     await msg.edit_text(header + res)
 
-# Заглушки для остальных кнопок меню
-@dp.message(F.text == "⚖️ Вес")
-async def set_weight(message: Message): await message.answer("Раздел в разработке 🚀")
-@dp.message(F.text == "👤 Профиль")
-async def show_prof(message: Message): await message.answer("Твой профиль 👤", reply_markup=goal_keyboard)
-@dp.message(F.text == "🥗 Что приготовить")
-async def what_to_cook(message: Message): await message.answer("Пришли фото холодильника 🧊")
+# ==========================================
+# 📝 РЕЦЕПТЫ И ХОЛОДИЛЬНИК
+# ==========================================
+@dp.message(F.text == "📝 Прислать рецепт")
+async def ask_recipe(message: Message, state: FSMContext):
+    await message.answer("Какое блюдо хочешь приготовить? Напиши название, и я рассчитаю граммовки под твой остаток калорий! 👨‍🍳")
+    await state.set_state(BotStates.waiting_for_recipe)
 
+@dp.message(BotStates.waiting_for_recipe)
+async def generate_recipe(message: Message, state: FSMContext):
+    msg = await message.answer("⏳ Сочиняю рецепт под твою норму...")
+    u_data = get_user_profile(message.from_user.id)
+    
+    prompt = (
+        f"Пользователь хочет приготовить: {message.text}.\n"
+        f"Его дневная норма: {u_data['norm']} ккал. "
+        "Сделай рецепт на 1 порцию. Распиши СТРОГО с использованием HTML (<b>, <i>):\n"
+        "🍽 <b>[Название]</b>\n___\n"
+        "<b>Ингредиенты:</b>\n• [ингредиент] — [вес] г\n___\n"
+        "<b>Рецепт:</b>\n1. [шаг]\n___\n"
+        "<b>КБЖУ:</b> [ккал] ккал | Б:[б] Ж:[ж] У:[у]"
+    )
+    res = await ask_ai(text_prompt=prompt)
+    await msg.edit_text(res)
+    await state.clear()
 
-# --- СЕРВЕР И ЗАПУСК ---
-async def health_check(request): return web.Response(text="Bot is running!")
+@dp.message(F.text == "🧊 Рецепт из того что есть")
+async def fridge_menu(message: Message, state: FSMContext):
+    await message.answer("Напиши список продуктов через запятую, и я соберу из них крутое блюдо (базовые специи и масло добавляю сам):")
+    await state.set_state(BotStates.waiting_for_fridge_ingredients)
+
+@dp.message(BotStates.waiting_for_fridge_ingredients)
+async def generate_fridge_menu(message: Message, state: FSMContext):
+    msg = await message.answer("⏳ Сочиняю рецепт...")
+    u_data = get_user_profile(message.from_user.id)
+    prompt = (
+        f"У пользователя есть продукты: {message.text}. Разрешено использовать базовое масло и специи.\n"
+        f"Его дневная норма {u_data['norm']} ккал. "
+        "Придумай блюдо на 1 порцию. Распиши СТРОГО с HTML:\n"
+        "🍽 <b>[Название]</b>\n___\n"
+        "<b>Ингредиенты:</b>\n• [ингредиент] — [вес] г\n___\n"
+        "<b>Рецепт:</b>\n1. [шаг]\n___\n"
+        "<b>КБЖУ:</b> [ккал] ккал | Б:[б] Ж:[ж] У:[у]"
+    )
+    res = await ask_ai(text_prompt=prompt)
+    await msg.edit_text(res)
+    await state.clear()
+
+# ==========================================
+# ⚙️ ЕЖЕДНЕВНЫЙ ЦИКЛ (СЕРВЕР И CRON)
+# ==========================================
+async def broadcast_morning():
+    """Рассылка каждое утро в 09:00"""
+    if not db: return
+    users_ref = db.collection('users').stream()
+    for doc in users_ref:
+        try:
+            await bot.send_message(doc.id, "Доброе утро! ☀️ Не забудь сфотографировать свой завтрак — я всё посчитаю!")
+        except: pass
+
+async def broadcast_afternoon():
+    """Проактивный вопрос каждый день в 15:00"""
+    if not db: return
+    users_ref = db.collection('users').stream()
+    for doc in users_ref:
+        try:
+            await bot.send_message(doc.id, "Как успехи? 🍽 Помочь собрать меню на ужин или завтрашний день? Жми 'Прислать рецепт' в меню!")
+        except: pass
+
+async def broadcast_evening():
+    """Итоги дня каждый вечер в 20:00"""
+    if not db: return
+    users_ref = db.collection('users').stream()
+    for doc in users_ref:
+        try:
+            await bot.send_message(doc.id, "День подходит к концу! 🌙 Загляни в 'Дневник', чтобы проверить свой остаток калорий. Ты молодец!")
+        except: pass
+
+async def health_check(request): 
+    return web.Response(text="Bot is running!")
 
 async def main():
     try:
+        # Планировщик ежедневного цикла
+        scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
+        scheduler.add_job(broadcast_morning, trigger=CronTrigger(hour=9, minute=0))
+        scheduler.add_job(broadcast_afternoon, trigger=CronTrigger(hour=15, minute=0))
+        scheduler.add_job(broadcast_evening, trigger=CronTrigger(hour=20, minute=0))
+        scheduler.start()
+
+        # Сервер для Render
         app = web.Application()
         app.router.add_get('/', health_check)
         runner = web.AppRunner(app)
@@ -406,7 +480,7 @@ async def main():
         await bot.delete_webhook(drop_pending_updates=True)
         await dp.start_polling(bot)
     except Exception as e:
-        print(e)
+        print(f"Критическая ошибка: {e}")
 
 if __name__ == "__main__":
     asyncio.run(main())
