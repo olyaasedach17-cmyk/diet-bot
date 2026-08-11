@@ -124,11 +124,12 @@ async def ask_ai(image_base64=None, text_prompt=None, system_prompt="Ты AI-н�
     elif text_prompt:
         messages.append({"role": "user", "content": text_prompt})
 
-    try:
+try:
         res = await client.chat.completions.create(model=AI_MODEL, messages=messages, temperature=0.2)
         return res.choices[0].message.content
     except Exception as e:
-        return f"Ошибка ИИ: Проверь подключение и AI_BASE_URL."
+        print(f"🔥 ПОЛНАЯ ОШИБКА ИИ: {e}")
+        return f"Ошибка: {e}"
 
 # ==========================================
 # 🚀 ОНБОРДИНГ
