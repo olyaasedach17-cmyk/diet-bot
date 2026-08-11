@@ -22,7 +22,21 @@ from firebase_admin import credentials, firestore
 load_dotenv()
 TOKEN = os.getenv('BOT_TOKEN')
 client = AsyncOpenAI(api_key=os.getenv('AI_API_KEY'), base_url=os.getenv('AI_BASE_URL'))
-
+def make_progress_bar(current: float, total: float, length: int = 10) -> str:
+    """Рисует красивый прогресс-бар: ■■■□□□□□□□"""
+    if total <= 0:
+        return "□" * length
+        
+    percent = current / total
+    # Защита от перебора (если съел больше нормы, полоска будет полной, но не сломается)
+    if percent > 1.0: 
+        percent = 1.0
+        
+    filled_length = int(length * percent)
+    empty_length = length - filled_length
+    
+    # Можно использовать любые символы, например 🟩 и ⬜️
+    return "■" * filled_length + "□" * empty_length
 # --- FIREBASE ---
 firebase_json_str = os.getenv('FIREBASE_JSON')
 if firebase_json_str:
