@@ -171,14 +171,15 @@ async def cmd_start(message: Message, state: FSMContext):
      await state.clear()
      user_name = message.from_user.first_name or "друг"
      if get_user_profile(message.from_user.id):
-      await message.answer(
-        "Я готов к работе! Присылай фото своей еды 📸\n\n"
-        "💡 *Лайфхак:* чтобы я максимально точно определял вес порции, всегда старайся класть рядом с тарелкой вилку, ложку или монету для масштаба!",
-        parse_mode="Markdown"
-    )
+         await message.answer(
+            "Я готов к работе! Присылай фото своей еды 📸\n\n"
+            "💡 *Лайфхак:* чтобы я максимально точно определял вес порции, всегда старайся класть рядом с тарелкой вилку, ложку или монету для масштаба!",
+            parse_mode="Markdown",
+            reply_markup=main_menu # ✅ ВОТ ОНО! ТЕПЕРЬ МЕНЮ ОБНОВИТСЯ!
+        )
      else:
-        await message.answer(f"Привет, {user_name}! 👋 Давай настроим твой профиль.\nУкажи свой пол:", reply_markup=gender_kb)
-        await state.set_state(ProfileStates.gender)
+         await message.answer(f"Привет, {user_name}! 👋 Давай настроим твой профиль.\nУкажи свой пол:", reply_markup=gender_kb)
+         await state.set_state(ProfileStates.gender)
 
 @dp.callback_query(ProfileStates.gender, F.data.startswith("gender_"))
 async def ask_age(callback: CallbackQuery, state: FSMContext):
