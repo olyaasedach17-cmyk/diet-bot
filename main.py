@@ -377,7 +377,7 @@ async def cmd_today(message: Message, state: FSMContext = None, user_id: str = N
     msg = await message.answer("⏳ Обновляю дневник...")
     meals_text = "\n\n".join(meals)
     prompt = (
-        f"Список съеденного:\n{meals_text}\n\nНорма: {u_data['norm']} ккал, Б:{u_data['p']} Ж:{u_data['f']} У:{u_data['c']}\n"
+       f"Список съеденного:\n{meals_text}\n\nНорма: {u_data.get('norm', 0)} ккал, Б:{u_data.get('p', 0)} Ж:{u_data.get('f', 0)} У:{u_data.get('c', 0)}\n"
         "Сделай красивый дневник как на фото. Шаблон:\n"
         "[Вставь список съеденного как есть]\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
