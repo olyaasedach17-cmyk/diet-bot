@@ -50,6 +50,10 @@ AI_VISION_MODEL = os.getenv("AI_VISION_MODEL") or AI_MODEL
 BEPAID_SHOP_ID = os.getenv("BEPAID_SHOP_ID", "")
 BEPAID_SECRET_KEY = os.getenv("BEPAID_SECRET_KEY", "")
 
+# Данные владельца бота
+OWNER_NAME = "Оля"
+OWNER_LINK = "https://www.instagram.com/helga_aceofdach?igsh=MXhkNmF2NHgzM3JoNA%3D%3D&utm_source=qr"  # Вставьте ссылку на ваш профиль Инстаграм
+
 if not BOT_TOKEN:
     raise RuntimeError("Не найден BOT_TOKEN")
 if not AI_API_KEY:
@@ -159,21 +163,35 @@ async def save_user_profile(user_id: int, data: dict):
         await asyncio.to_thread(db.collection('users').document(str(user_id)).set, data, merge=True)
 
 async def check_user_access(user_id: int) -> bool:
+    """Проверка доступа. Если у существующего пользователя еще нет триала — дает 14 дней с сегодняшнего дня."""
     user = await get_user_profile(user_id)
     if not user:
         return False
         
     now = datetime.now()
     
-    trial_str = user.get("trial_until")
-    if trial_str:
-        if now < datetime.fromisoformat(trial_str):
-            return True
-            
+    # 1. Проверка платной подписки
     premium_str = user.get("premium_until")
     if premium_str:
-        if now < datetime.fromisoformat(premium_str):
+        try:
+            if now < datetime.fromisoformat(premium_str):
+                return True
+        except Exception:
+            pass
+
+    # 2. Проверка бесплатного триала
+    trial_str = user.get("trial_until")
+    if not trial_str:
+        # Автоматически выдаем 14 дней с сегодняшнего дня для существующих пользователей
+        new_trial_end = now + timedelta(days=14)
+        await save_user_profile(user_id, {"trial_until": new_trial_end.isoformat()})
+        return True
+        
+    try:
+        if now < datetime.fromisoformat(trial_str):
             return True
+    except Exception:
+        pass
             
     return False
 
@@ -188,6 +206,25 @@ async def send_paywall(message: Message):
         [InlineKeyboardButton(text="6 месяцев — 49 BYN 💎 (Скидка 45%)", callback_data="buy_6_months")],
     ])
     await message.answer(text, reply_markup=kb)
+
+async def set_bot_description(bot: Bot):
+    description = (
+        "Что умеет этот бот?\n"
+        "🍽 Сфотографируй еду — Умная Тарелка определит состав, оценит граммовки, "
+        "рассчитает КБЖУ и добавит приём пищи в дневник.\n\n"
+        "🎤 Поймёт голосовое сообщение\n"
+        "🏋️ Составит домашнюю тренировку и учтёт сожжённые калории\n"
+        "💧 Поможет вести трекер выпитой воды\n"
+        "⚖️ Проследит за динамикой веса и рассчитает дни до цели\n"
+        "🧊 Соберёт меню из продуктов в холодильнике\n"
+        "🎯 Рассчитает личную норму КБЖУ\n\n"
+        "Без ручного поиска продуктов и сложных таблиц.\n\n"
+        "Нажимай «Старт» и попробуй 👇"
+    )
+    try:
+        await bot.set_my_description(description)
+    except Exception as e:
+        logger.warning(f"Не удалось установить описание бота: {e}")
 
 async def get_today_meals(user_id: int) -> list:
     if not db:
@@ -379,7 +416,7 @@ async def send_today(message: Message, user_id: int | None = None):
     await message.answer(text, reply_markup=kb)
 
 # =========================================================
-# ОНБОРДИНГ (14 ДНЕЙ ТРИАЛА)
+# ОНБОРДИНГ
 # =========================================================
 @dp.message(CommandStart())
 async def start_handler(message: Message, state: FSMContext):
@@ -388,14 +425,44 @@ async def start_handler(message: Message, state: FSMContext):
     if user:
         await message.answer("С возвращением! Пришли фото еды 📸", reply_markup=main_menu)
         return
-        
+
+    user_name = message.from_user.first_name or "друг"
+    
+    welcome_text = (
+        f"Привет, {user_name} 🕊! Это «Умная Тарелка» — я <a href='{OWNER_LINK}'><b>{OWNER_NAME}</b></a>, твой нутрициолог в телефоне 🥗\n\n"
+        "Что я умею:\n"
+        "📸 считать КБЖУ по фото еды — просто сфоткай тарелку;\n"
+        "📊 вести дневник, чтобы ты не выходил за свою норму;\n"
+        "🎤 понимать голосовые сообщения;\n"
+        "🏋️ подбирать короткие домашние тренировки;\n"
+        "💧 вести учёт выпитой воды;\n"
+        "⚖️ отслеживать динамику веса и дни до цели;\n"
+        "🧊 собирать меню из того, что лежит в холодильнике.\n\n"
+        "Сначала короткий опрос — <b>4 вопроса</b>, меньше минуты. Он нужен, чтобы посчитать <b>твою</b> норму, а не среднюю по больнице."
+    )
+    
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🚀 Начать", callback_data="start_onb")]
+        ]
+    )
+    
+    await message.answer(welcome_text, reply_markup=main_menu)
+    await message.answer("Жми кнопку ниже 👇", reply_markup=kb)
+
+@dp.callback_query(F.data == "start_onb")
+async def start_onboarding_callback(callback: CallbackQuery):
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="👨 Мужчина", callback_data="gender_M")],
             [InlineKeyboardButton(text="👩 Женщина", callback_data="gender_F")],
         ]
     )
-    await message.answer("Привет! Я «Умная Тарелка» 🥗\n\nДля начала выбери пол:", reply_markup=keyboard)
+    await callback.message.edit_text(
+        "<i>Шаг 1 из 4</i>\n\nТвой <b>пол</b>?\n<i>От него зависит формула расчёта.</i>", 
+        reply_markup=keyboard
+    )
+    await callback.answer()
 
 @dp.callback_query(F.data.startswith("gender_"))
 async def gender_handler(callback: CallbackQuery, state: FSMContext):
@@ -876,6 +943,10 @@ async def send_morning_digest():
         except Exception as e:
             logger.error(f"Ошибка утренней рассылки {user_id}: {e}")
 
+@dp.message(Command("test_morning"))
+async def test_morning_handler(message: Message):
+    await send_morning_digest()
+
 # =========================================================
 # WEBHOOK ПЛАТЕЖЕЙ BEPAID
 # =========================================================
@@ -938,6 +1009,9 @@ async def main():
         
         bot_info = await bot.get_me()
         logger.info("Telegram подключен: @%s", bot_info.username)
+        
+        # Установка официального описания карточки бота
+        await set_bot_description(bot)
         
         scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
         scheduler.add_job(send_morning_digest, "cron", hour=9, minute=0)
