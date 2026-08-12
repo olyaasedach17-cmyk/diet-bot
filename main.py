@@ -136,7 +136,23 @@ async def get_user_profile(user_id: int) -> dict | None:
     if not db:
         return None
     doc = await asyncio.to_thread(db.collection('users').document(str(user_id)).get)
-    return doc.to_dict() if doc.exists else None
+    if not doc.exists:
+        return None
+        
+    data = doc.to_dict()
+    
+    # Совместимость со старыми и новыми названиями полей в Firebase
+    calories = data.get('calories') or data.get('norm') or 2000
+    protein = data.get('protein') or data.get('p') or 100
+    fat = data.get('fat') or data.get('f') or 70
+    carbs = data.get('carbs') or data.get('c') or 200
+    
+    data['calories'] = int(calories)
+    data['protein'] = int(protein)
+    data['fat'] = int(fat)
+    data['carbs'] = int(carbs)
+    
+    return data
 
 async def save_user_profile(user_id: int, data: dict):
     if db:
@@ -689,10 +705,7 @@ async def help_handler(message: Message):
         "/plan — дневная норма\n"
         "/fridge — рецепт из продуктов"
     )
-    @dp.message(Command("test_morning"))
-async def test_morning_handler(message: Message):
-    if message.from_user.id:
-        await send_morning_digest()
+
 
 # =========================================================
 # УТРЕННЯЯ РАССЫЛКА (РАСПИСАНИЕ)
@@ -746,12 +759,16 @@ async def send_morning_digest():
             f"<i>Неспешно, но уверенно — маленький шаг сегодня{target_weight_str}</i>"
         )
 
-        try:
+       try:
             await bot.send_message(chat_id=int(user_id), text=text)
-            await asyncio.sleep(0.1) # Задержка, чтобы Telegram не забанил за спам
+            await asyncio.sleep(0.1)
         except Exception as e:
-            logger.error(f"Не удалось отправить утреннее сообщение пользователю {user_id}: {e}")
+            logger.error(f"Не удалось отправить утреннее сообщение {user_id}: {e}")
 
+
+@dp.message(Command("test_morning"))
+async def test_morning_handler(message: Message):
+    await send_morning_digest()
 # =========================================================
 # ЗАПУСК
 # =========================================================
