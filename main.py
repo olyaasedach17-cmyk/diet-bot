@@ -42,22 +42,24 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.getenv("BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN")
 AI_API_KEY = os.getenv("AI_API_KEY") or os.getenv("POLZA_API_KEY")
 AI_BASE_URL = os.getenv("AI_BASE_URL") or os.getenv("POLZA_BASE_URL")
-AI_MODEL = os.getenv("AI_MODEL")
+
+# Основная модель для текста (например, openai/gpt-5.6-luna)
+AI_MODEL = os.getenv("AI_MODEL") 
+# Модель для фото (например, google/gemini-3.5-flash-lite). Если не указана, берем основную.
+AI_VISION_MODEL = os.getenv("AI_VISION_MODEL") or AI_MODEL 
 
 if not BOT_TOKEN:
-    raise RuntimeError("Не найден BOT_TOKEN или TELEGRAM_BOT_TOKEN")
-
+    raise RuntimeError("Не найден BOT_TOKEN")
 if not AI_API_KEY:
-    raise RuntimeError("Не найден AI_API_KEY или POLZA_API_KEY")
-
+    raise RuntimeError("Не найден AI_API_KEY")
 if not AI_BASE_URL:
-    raise RuntimeError("Не найден AI_BASE_URL или POLZA_BASE_URL")
-
+    raise RuntimeError("Не найден AI_BASE_URL")
 if not AI_MODEL:
-    raise RuntimeError("Не найден AI_MODEL. Укажите точное название модели из Polza.")
+    raise RuntimeError("Не найдена AI_MODEL")
 
 logger.info("AI_BASE_URL: %s", AI_BASE_URL)
-logger.info("AI_MODEL: %s", AI_MODEL)
+logger.info("AI_MODEL (Текст): %s", AI_MODEL)
+logger.info("AI_VISION_MODEL (Фото): %s", AI_VISION_MODEL)
 
 # =========================================================
 # БАЗА ДАННЫХ SQLITE
@@ -197,7 +199,9 @@ def extract_json(text: str) -> dict:
         raise ValueError("AI не вернул JSON")
     return json.loads(match.group(0))
 
-async def ask_ai(prompt: str, image_base64: str | None = None) -> str:
+async def ask_ai(prompt: str, image_base64: str | None = None, model: str | None = None) -> str:
+    used_model = model or AI_MODEL
+    
     if image_base64:
         user_content = [
             {"type": "text", "text": prompt},
@@ -208,7 +212,7 @@ async def ask_ai(prompt: str, image_base64: str | None = None) -> str:
         
     try:
         response = await ai_client.chat.completions.create(
-            model=AI_MODEL,
+            model=used_model,
             messages=[
                 {"role": "system", "content": "Ты помощник по питанию. Отвечай на русском языке."},
                 {"role": "user", "content": user_content},
@@ -218,7 +222,7 @@ async def ask_ai(prompt: str, image_base64: str | None = None) -> str:
             return ""
         return response.choices[0].message.content or ""
     except Exception:
-        logger.exception("Ошибка обращения к AI")
+        logger.exception(f"Ошибка обращения к AI (модель: {used_model})")
         raise
 
 def food_keyboard() -> InlineKeyboardMarkup:
@@ -406,6 +410,7 @@ async def photo_handler(message: Message, state: FSMContext):
                 "Определи еду на фотографии. Укажи название блюда, ингредиенты "
                 "и примерный вес порции. Калории пока не считай."
             ),
+            model=AI_VISION_MODEL # <--- Используем модель для фото!
         )
         
         await state.update_data(recognized_food=result, image_base64=image_base64)
@@ -437,6 +442,7 @@ async def food_correct_handler(callback: CallbackQuery, state: FSMContext):
                 '  "comment": "короткий совет"\n'
                 "}"
             ),
+            # Здесь модель не указываем, по умолчанию используется текстовая (AI_MODEL)
         )
         food_data = extract_json(result)
         await state.update_data(calculated_food=food_data)
