@@ -102,14 +102,13 @@ dp = Dispatcher()
 
 main_menu = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="📊 Сегодня"), KeyboardButton(text="🥗 Что приготовить")],
-        [KeyboardButton(text="🏋️ Тренировка"), KeyboardButton(text="⚖️ Вес")],
-        [KeyboardButton(text="👤 Профиль"), KeyboardButton(text="❓ Помощь")]
+        [KeyboardButton(text="📊 Сегодня"), KeyboardButton(text="😋 Вкусняшка")],
+        [KeyboardButton(text="🥗 Что приготовить"), KeyboardButton(text="🏋️ Тренировка")],
+        [KeyboardButton(text="⚖️ Вес"), KeyboardButton(text="👤 Профиль")]
     ],
     resize_keyboard=True,
     input_field_placeholder="Пришли фото еды, наговори голосом...",
 )
-
 # =========================================================
 # СОСТОЯНИЯ
 # =========================================================
@@ -125,6 +124,8 @@ class WeightStates(StatesGroup):
 
 class ActivityStates(StatesGroup):
     waiting_for_activity = State()
+class TreatStates(StatesGroup):
+    waiting_for_treat = State()
 
 # =========================================================
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
@@ -209,7 +210,7 @@ async def send_paywall(message: Message):
 async def set_bot_description(bot: Bot):
     description = (
         "Что умеет этот бот?\n"
-        "🍽 Сфотографируй еду — Умная Тарелка определит состав, оценит граммовки, "
+        "🍽 Сфотографируй еду — NutriAI определит состав, оценит граммовки, "
         "рассчитает КБЖУ и добавит приём пищи в дневник.\n\n"
         "🎤 Поймёт голосовое сообщение\n"
         "🏋️ Составит программу тренировок под твой уровень\n"
@@ -979,7 +980,74 @@ async def process_buy_callback(callback: CallbackQuery):
         )
     else:
         await callback.message.edit_text("Ошибка формирования счета. Напишите в поддержку.")
+# =========================================================
+# БЫСТРЫЙ УЧЁТ ЛАКОМСТВ И ДЕСЕРТОВ (ВКУСНЯШКА)
+# =========================================================
+@dp.message(F.text == "😋 Вкусняшка")
+@dp.message(Command("treat"))
+async def treat_button_handler(message: Message, state: FSMContext):
+    if not await check_user_access(message.from_user.id):
+        await send_paywall(message)
+        return
 
+    await state.set_state(TreatStates.waiting_for_treat)
+    await message.answer(
+        "😋 <b>Съел(а) что-то вкусное?</b>\n\n"
+        "Напиши текстом или наговори голосом, что это было (например: <i>«кусочек торта Наполеон»</i>, <i>«2 дольки тёмного шоколада»</i>, <i>«маленький баунти»</i>).\n\n"
+        "<i>Я аккуратно внизу внесу это в дневник без чувства вины — баловать себя это абсолютно нормально! ✨</i>"
+    )
+
+@dp.message(TreatStates.waiting_for_treat)
+async def process_treat_input(message: Message, state: FSMContext):
+    await state.clear()
+    wait_msg = await message.answer("⏳ Считаю КБЖУ вкусняшки...")
+
+    user = await get_user_profile(message.from_user.id)
+    goal = user.get("goal", "loss") if user else "loss"
+
+    prompt = (
+        f"Пользователь съел лакомство/десерт: \"{message.text}\". Цель человека: '{goal}'.\n"
+        "Рассчитай примерный КБЖУ этого лакомства.\n"
+        "Верни строго JSON без комментария и markdown блоков:\n"
+        "{\n"
+        '  "title": "название десерта",\n'
+        '  "calories": 0,\n'
+        '  "protein": 0,\n'
+        '  "fat": 0,\n'
+        '  "carbs": 0,\n'
+        '  "comment": "Короткая, очень теплая фраза поддержки (1 предложение) про то, что зацикливаться на ругани себя нельзя и десерт вписался в день!"\n'
+        "}"
+    )
+
+    try:
+        res = await ask_ai(prompt=prompt, model=AI_MODEL)
+        food_data = extract_json(res)
+
+        title = clean_html_tags(str(food_data.get("title", "Вкусняшка")))
+        comment = clean_html_tags(str(food_data.get("comment", "Приятного аппетита!")))
+
+        meal_record = {
+            "title": f"😋 {title}",
+            "calories": int(food_data.get("calories", 0) or 0),
+            "protein": int(food_data.get("protein", 0) or 0),
+            "fat": int(food_data.get("fat", 0) or 0),
+            "carbs": int(food_data.get("carbs", 0) or 0),
+            "created_at": datetime.now().isoformat()
+        }
+
+        await add_meal_to_today(message.from_user.id, meal_record)
+
+        text = (
+            f"😋 <b>{title} добавлена в дневник!</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            f"🔥 {meal_record['calories']} ккал · Б {meal_record['protein']} г · Ж {meal_record['fat']} г · У {meal_record['carbs']} г\n\n"
+            f"💬 <i>{comment}</i>"
+        )
+        await wait_msg.edit_text(text)
+        await send_today(message, user_id=message.from_user.id)
+    except Exception as e:
+        logger.error(f"Ошибка вкусняшки: {e}")
+        await wait_msg.edit_text("Не удалось рассчитать лакомство. Попробуй описать чуть точнее (например: «1 сникерс урбан» или «мороженое стаканчик»).")
 # =========================================================
 # КНОПКИ И КОМАНДЫ
 # =========================================================
