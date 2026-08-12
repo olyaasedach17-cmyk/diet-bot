@@ -343,7 +343,7 @@ def result_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="🗑 Удалить", callback_data="food_delete")],
         ]
     )
-    def activity_result_keyboard() -> InlineKeyboardMarkup:
+def activity_result_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="✅ Добавить активность", callback_data="activity_save")],
