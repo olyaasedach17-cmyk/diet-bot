@@ -430,7 +430,7 @@ async def start_handler(message: Message, state: FSMContext):
     user_name = message.from_user.first_name or "друг"
     
     welcome_text = (
-        f"Привет, {user_name} 🕊! Это «Умная Тарелка» — я <a href='{OWNER_LINK}'><b>{OWNER_NAME}</b></a>, твой нутрициолог в телефоне 🥗\n\n"
+        f"Привет, {user_name} 🕊! Это «Nutri Ai» — я <a href='{OWNER_LINK}'><b>{OWNER_NAME}</b></a>, твой нутрициолог в телефоне 🥗\n\n"
         "Что я умею:\n"
         "📸 считать КБЖУ по фото еды — просто сфоткай тарелку;\n"
         "📊 вести дневник, чтобы ты не выходил за свою норму;\n"
