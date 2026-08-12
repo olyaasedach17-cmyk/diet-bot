@@ -261,7 +261,6 @@ async def set_bot_commands(bot: Bot):
         BotCommand(command="ask", description="💬 Спросить нутрициолога"),
         BotCommand(command="weight", description="⚖️ Динамика веса"),
         BotCommand(command="profile", description="👤 Профиль и норма"),
-        BotCommand(command="reset", description="🔄 Сброс профиля (тест)"),
         BotCommand(command="help", description="❓ Помощь"),
     ]
     try:
