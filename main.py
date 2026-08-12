@@ -1416,13 +1416,39 @@ async def plan_handler(message: Message):
 @dp.message(F.text == "👤 Профиль")
 @dp.message(Command("profile"))
 async def profile_handler(message: Message):
-    await plan_handler(message)
+    user = await get_user_profile(message.from_user.id)
+    if not user:
+        await message.answer("Сначала нажми /start.")
+        return
+
+    diet_titles = {
+        "all": "🍏 Ем всё",
+        "nutri": "🥦 Нутри-подход",
+        "veg": "🥕 Вегетарианец",
+        "allergy": "🚫 Без лактозы и глютена"
+    }
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🛡 Изменить аллергии", callback_data="profile_edit_allergies")],
+        [InlineKeyboardButton(text="⚙️ Пересчитать норму (Опрос)", callback_data="profile_recount_norm")]
+    ])
+
+    await message.answer(
+        "👤 <b>ТВОЙ ПРОФИЛЬ И НОРМА</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"🔥 Калории: <b>{user.get('calories', 2000)} ккал</b>\n"
+        f"🥩 Белки: <b>{user.get('protein', 100)} г</b>\n"
+        f"🥑 Жиры: <b>{user.get('fat', 70)} г</b>\n"
+        f"🍚 Углеводы: <b>{user.get('carbs', 200)} г</b>\n\n"
+        f"🥗 <b>Тип питания:</b> {diet_titles.get(user.get('diet'), 'Обычное')}\n"
+        f"🛡 <b>Аллергии:</b> {user.get('allergies', 'Нет')}",
+        reply_markup=kb
+    )
 
 @dp.message(F.text == "❓ Помощь")
 @dp.message(Command("help"))
 async def help_handler(message: Message):
     await message.answer("📸 Пришли фото еды — я посчитаю КБЖУ.\n🗣 Или наговори голосом!")
-
 # =========================================================
 # УТРЕННЯЯ РАССЫЛКА
 # =========================================================
@@ -1563,6 +1589,7 @@ async def main():
         logger.info("Telegram подключен: @%s", bot_info.username)
         
         await set_bot_description(bot)
+        await set_bot_commands(bot)
         
         scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
         scheduler.add_job(send_morning_digest, "cron", hour=9, minute=0)
