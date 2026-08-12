@@ -343,6 +343,13 @@ def result_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="🗑 Удалить", callback_data="food_delete")],
         ]
     )
+    def activity_result_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Добавить активность", callback_data="activity_save")],
+            [InlineKeyboardButton(text="🗑 Отмена", callback_data="food_delete")],
+        ]
+    )
 
 async def send_today(message: Message, user_id: int | None = None):
     target_id = user_id or message.from_user.id
@@ -672,16 +679,26 @@ async def workout_menu_handler(message: Message):
 
     text = (
         "🏋️ <b>ТРЕНИРОВКИ И АКТИВНОСТЬ</b>\n\n"
-        "Выбери подходящий вариант тренировки на сегодня или впиши свою активность (бег, плавание, танцы):"
+        "Выбери вариант тренировки на сегодня или впиши свои шаги/активность:"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🏠 Дома · Лёгкая (Новичок 🟢)", callback_data="gen_workout_home_easy")],
         [InlineKeyboardButton(text="🏠 Дома · Обычная (Средний 🟡)", callback_data="gen_workout_home_medium")],
         [InlineKeyboardButton(text="🏋️ В зале · Базовая 🟢", callback_data="gen_workout_gym_easy")],
         [InlineKeyboardButton(text="🏋️ В зале · Продвинутая 🔴", callback_data="gen_workout_gym_hard")],
-        [InlineKeyboardButton(text="✍️ Вписать свою активность", callback_data="enter_custom_activity")]
+        [InlineKeyboardButton(text="👣 Своя активность или Шаги", callback_data="enter_custom_activity")]
     ])
     await message.answer(text, reply_markup=kb)
+
+@dp.callback_query(F.data == "enter_custom_activity")
+async def enter_activity_callback(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(ActivityStates.waiting_for_activity)
+    await callback.message.edit_text(
+        "👣 <b>Введи свою активность или шаги:</b>\n\n"
+        "Напиши текстом или наговори голосом, сколько шагов ты прошел(ла) или какую тренировку сделал(а).\n\n"
+        "Например: <i>«Прошла 12 000 шагов»</i>, <i>«Силовая тренировка в зале 1 час»</i> или <i>«Плавание 45 минут»</i>."
+    )
+    await callback.answer()
 
 @dp.callback_query(F.data.startswith("gen_workout_"))
 async def generate_workout_callback(callback: CallbackQuery):
@@ -752,7 +769,8 @@ async def enter_activity_callback(callback: CallbackQuery, state: FSMContext):
 
 @dp.message(ActivityStates.waiting_for_activity)
 async def process_custom_activity(message: Message, state: FSMContext):
-    await state.clear()
+    # Снимаем состояние, но данные сохраним
+    await state.set_state(None)
     wait_msg = await message.answer("⏳ Рассчитываю расход калорий...")
     
     user = await get_user_profile(message.from_user.id)
@@ -760,10 +778,11 @@ async def process_custom_activity(message: Message, state: FSMContext):
 
     prompt = (
         f"Пользователь весом {weight} кг выполнил активность: \"{message.text}\".\n"
+        "Если речь о шагах, учти, что в среднем 1000 шагов = ~30-40 ккал (зависит от веса).\n"
         "Рассчитай примерный расход сожжённых калорий.\n"
         "Верни строго JSON:\n"
         "{\n"
-        '  "title": "название активности",\n'
+        '  "title": "название активности (например: 10000 шагов или Бег 30 мин)",\n'
         '  "burned_kcal": 0,\n'
         '  "comment": "короткая похвала"\n'
         "}"
@@ -773,45 +792,52 @@ async def process_custom_activity(message: Message, state: FSMContext):
         res = await ask_ai(prompt=prompt, model=AI_MODEL)
         act_data = extract_json(res)
         
+        # Сохраняем рассчитанную активность в память бота, чтобы кнопка сработала
+        await state.update_data(calculated_activity=act_data)
+        
         burned = int(act_data.get("burned_kcal", 150))
         title = clean_html_tags(str(act_data.get("title", "Активность")))
         comment = clean_html_tags(str(act_data.get("comment", "Отличная работа!")))
 
-        user_id = message.from_user.id
-        doc_id = f"{user_id}_{today_str()}"
-        
-        if db:
-            doc_ref = db.collection('diaries').document(doc_id)
-            doc = await asyncio.to_thread(doc_ref.get)
-            current_burned = doc.to_dict().get('burned_kcal', 0) if doc.exists else 0
-            new_burned = current_burned + burned
-            await asyncio.to_thread(doc_ref.set, {'burned_kcal': new_burned}, merge=True)
-
-        await wait_msg.edit_text(
-            f"🔥 <b>Зачтено: -{burned} ккал!</b>\n"
-            f"🏃 <b>Активность:</b> {title}\n\n"
-            f"💬 <i>{comment}</i>"
+        text = (
+            f"🏃 <b>Активность:</b> {title}\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            f"🔥 Примерный расход: <b>{burned} ккал</b>\n\n"
+            f"💬 <i>{comment}</i>\n\n"
+            "Добавить эту активность в дневник?"
         )
-        await send_today(message, user_id=user_id)
+        
+        # Выводим карточку и кнопки (Добавить / Отмена)
+        await wait_msg.edit_text(text, reply_markup=activity_result_keyboard())
     except Exception as e:
         logger.error(f"Ошибка расчёта активности: {e}")
-        await wait_msg.edit_text("Не удалось рассчитать активность. Попробуй ещё раз.")
+        await wait_msg.edit_text("Не удалось рассчитать активность. Попробуй описать точнее.")
 
-@dp.callback_query(F.data.startswith("done_workout_"))
-async def done_workout_callback(callback: CallbackQuery):
+# Обработчик нажатия на кнопку "Добавить активность"
+@dp.callback_query(F.data == "activity_save")
+async def save_activity_handler(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    act_data = data.get("calculated_activity")
+    
+    if not act_data:
+        await callback.message.edit_text("❌ Данные устарели. Попробуй внести активность заново.")
+        return
+
+    burned = int(act_data.get("burned_kcal", 0))
     user_id = callback.from_user.id
-    burned_kcal = int(callback.data.split("_")[2])
     doc_id = f"{user_id}_{today_str()}"
     
-    if db:
+    if db and burned > 0:
         doc_ref = db.collection('diaries').document(doc_id)
         doc = await asyncio.to_thread(doc_ref.get)
         current_burned = doc.to_dict().get('burned_kcal', 0) if doc.exists else 0
-        new_burned = current_burned + burned_kcal
+        new_burned = current_burned + burned
         await asyncio.to_thread(doc_ref.set, {'burned_kcal': new_burned}, merge=True)
-        await callback.answer(f"🔥 Зачтено -{burned_kcal} ккал!")
-        await callback.message.edit_text(f"{callback.message.text}\n\n✅ <b>Сожжено {burned_kcal} ккал! Зачтено в дневник.</b>")
-        await send_today(callback.message, user_id=user_id)
+
+    await state.clear()
+    await callback.message.edit_text(f"✅ <b>Сожжено {burned} ккал! Зачтено в дневник.</b>")
+    await send_today(callback.message, user_id=user_id)
+    await callback.answer()
 
 # =========================================================
 # ГОЛОСОВЫЕ СООБЩЕНИЯ (WHISPER)
@@ -999,7 +1025,9 @@ async def treat_button_handler(message: Message, state: FSMContext):
 
 @dp.message(TreatStates.waiting_for_treat)
 async def process_treat_input(message: Message, state: FSMContext):
-    await state.clear()
+    # Снимаем состояние ожидания, но сохраняем данные (чтобы кнопка Сохранить сработала)
+    await state.set_state(None) 
+    
     wait_msg = await message.answer("⏳ Считаю КБЖУ вкусняшки...")
 
     user = await get_user_profile(message.from_user.id)
@@ -1015,7 +1043,7 @@ async def process_treat_input(message: Message, state: FSMContext):
         '  "protein": 0,\n'
         '  "fat": 0,\n'
         '  "carbs": 0,\n'
-        '  "comment": "Короткая, очень теплая фраза поддержки (1 предложение) про то, что зацикливаться на ругани себя нельзя и десерт вписался в день!"\n'
+        '  "comment": "Короткая, очень теплая фраза поддержки (1 предложение) про то, что зацикливаться на ругани себя нельзя!"\n'
         "}"
     )
 
@@ -1023,28 +1051,30 @@ async def process_treat_input(message: Message, state: FSMContext):
         res = await ask_ai(prompt=prompt, model=AI_MODEL)
         food_data = extract_json(res)
 
+        # Добавляем эмодзи, чтобы в дневнике было красиво
         title = clean_html_tags(str(food_data.get("title", "Вкусняшка")))
+        if not title.startswith("😋"):
+            food_data["title"] = f"😋 {title}"
+
+        # ❗️ СОХРАНЯЕМ ДАННЫЕ В ПАМЯТЬ БОТА (для кнопки "Сохранить в дневник")
+        await state.update_data(calculated_food=food_data)
+
         comment = clean_html_tags(str(food_data.get("comment", "Приятного аппетита!")))
 
-        meal_record = {
-            "title": f"😋 {title}",
-            "calories": int(food_data.get("calories", 0) or 0),
-            "protein": int(food_data.get("protein", 0) or 0),
-            "fat": int(food_data.get("fat", 0) or 0),
-            "carbs": int(food_data.get("carbs", 0) or 0),
-            "created_at": datetime.now().isoformat()
-        }
-
-        await add_meal_to_today(message.from_user.id, meal_record)
-
         text = (
-            f"😋 <b>{title} добавлена в дневник!</b>\n"
+            f"🍽 <b>{food_data['title']}</b>\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
-            f"🔥 {meal_record['calories']} ккал · Б {meal_record['protein']} г · Ж {meal_record['fat']} г · У {meal_record['carbs']} г\n\n"
-            f"💬 <i>{comment}</i>"
+            f"🔥 Калории: <b>{food_data.get('calories', 0)} ккал</b>\n"
+            f"🥩 Белки: {food_data.get('protein', 0)} г\n"
+            f"🥑 Жиры: {food_data.get('fat', 0)} г\n"
+            f"🍚 Углеводы: {food_data.get('carbs', 0)} г\n\n"
+            f"💬 <i>{comment}</i>\n\n"
+            "Внести эту вкусняшку в дневник?"
         )
-        await wait_msg.edit_text(text)
-        await send_today(message, user_id=message.from_user.id)
+        
+        # ❗️ ВЫВОДИМ КНОПКУ СОХРАНЕНИЯ (как и везде)
+        await wait_msg.edit_text(text, reply_markup=result_keyboard())
+        
     except Exception as e:
         logger.error(f"Ошибка вкусняшки: {e}")
         await wait_msg.edit_text("Не удалось рассчитать лакомство. Попробуй описать чуть точнее (например: «1 сникерс урбан» или «мороженое стаканчик»).")
