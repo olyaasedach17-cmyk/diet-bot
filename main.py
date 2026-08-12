@@ -6,6 +6,7 @@ import logging
 import os
 import re
 from datetime import datetime
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from aiohttp import web
 from dotenv import load_dotenv
@@ -688,19 +689,28 @@ async def help_handler(message: Message):
         "/plan — дневная норма\n"
         "/fridge — рецепт из продуктов"
     )
+    @dp.message(Command("test_morning"))
+async def test_morning_handler(message: Message):
+    if message.from_user.id:
+        await send_morning_digest()
 
 # =========================================================
-# УТРЕННЯЯ РАССЫЛКА
+# УТРЕННЯЯ РАССЫЛКА (РАСПИСАНИЕ)
 # =========================================================
 def get_russian_date_str() -> str:
     days = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
     months = ["янв.", "февр.", "марта", "апр.", "мая", "июня", "июля", "авг.", "сент.", "окт.", "нояб.", "дек."]
     now = datetime.now()
-    return f"{days[now.weekday()]}, {now.day} {months[now.month - 1]}"
+    day_name = days[now.weekday()]
+    month_name = months[now.month - 1]
+    return f"{day_name}, {now.day} {month_name}"
 
 async def send_morning_digest():
+    """Отправка утреннего плана и совета каждому пользователю"""
     if not db:
+        logger.warning("Firebase не подключен, утренняя рассылка пропущена.")
         return
+
     logger.info("🌅 Запуск утренней рассылки...")
     users_docs = await asyncio.to_thread(db.collection('users').get)
     date_str = get_russian_date_str()
@@ -714,10 +724,11 @@ async def send_morning_digest():
         goal = user_data.get("goal", "maintain")
         weight = user_data.get("weight", "")
 
+        # Запрашиваем у ИИ краткий утренний фокус/совет
         prompt = (
             f"Составь 1-2 коротких мотивационных предложения на утро для человека с целью '{goal}'. "
             f"Посоветуй, с чего лучше начать завтрак, чтобы набрать белок (норма {norm_p}г). "
-            "Пиши тепло, поддерживающе, без строгости."
+            "Пиши тепло, без официоза."
         )
         
         try:
@@ -737,22 +748,9 @@ async def send_morning_digest():
 
         try:
             await bot.send_message(chat_id=int(user_id), text=text)
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.1) # Задержка, чтобы Telegram не забанил за спам
         except Exception as e:
-            logger.error(f"Не удалось отправить утреннее сообщение {user_id}: {e}")
-
-@dp.message(Command("test_morning"))
-async def test_morning_handler(message: Message):
-    await send_morning_digest()
-
-# =========================================================
-# HEALTH CHECK ДЛЯ RENDER
-# =========================================================
-async def health_handler(request: web.Request):
-    return web.json_response({
-        "status": "ok",
-        "service": "food-telegram-bot",
-    })
+            logger.error(f"Не удалось отправить утреннее сообщение пользователю {user_id}: {e}")
 
 # =========================================================
 # ЗАПУСК
@@ -775,6 +773,7 @@ async def main():
         bot_info = await bot.get_me()
         logger.info("Telegram подключен: @%s", bot_info.username)
         
+        # ⏰ НАСТРОЙКА И ЗАПУСК ПЛАНИРОВЩИКА (в 09:00 по Москве)
         scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
         scheduler.add_job(send_morning_digest, "cron", hour=9, minute=0)
         scheduler.start()
