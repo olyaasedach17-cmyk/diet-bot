@@ -1565,6 +1565,46 @@ async def bepaid_webhook_handler(request: web.Request):
 
 async def health_handler(request: web.Request):
     return web.json_response({"status": "ok", "service": "food-telegram-bot"})
+    
+# =========================================================
+# НАСТРОЙКА КОМАНД МЕНЮ (ВСТАВИТЬ СЮДА)
+# =========================================================
+from aiogram.types import BotCommand
+
+async def set_bot_commands(bot: Bot):
+    commands = [
+        BotCommand(command="today", description="📊 Дневник за сегодня"),
+        BotCommand(command="treat", description="😋 Вкусняшка"),
+        BotCommand(command="fridge", description="🥗 Что приготовить"),
+        BotCommand(command="workout", description="🏋️ Тренировка"),
+        BotCommand(command="ask", description="💬 Спросить нутрициолога"),
+        BotCommand(command="weight", description="⚖️ Динамика веса"),
+        BotCommand(command="profile", description="👤 Профиль и норма"),
+        BotCommand(command="reset", description="🔄 Сброс профиля (тест)"),
+        BotCommand(command="help", description="❓ Помощь"),
+    ]
+    try:
+        await bot.set_my_commands(commands)
+    except Exception as e:
+        logger.warning(f"Не удалось установить команды: {e}")
+
+# =========================================================
+# ЗАПУСК (ЭТО ДОЛЖНО БЫТЬ В САМОМ НИЗУ)
+# =========================================================
+async def main():
+    app = web.Application()
+    # ... тут остальной код запуска ...
+    
+    try:
+        await site.start()
+        logger.info("HTTP-сервер запущен на порту %s", port)
+        
+        bot_info = await bot.get_me()
+        logger.info("Telegram подключен: @%s", bot_info.username)
+        
+        await set_bot_description(bot)
+        await set_bot_commands(bot)  # <--- ВОТ ТУТ ОНА ВЫЗЫВАЕТСЯ
+        # ...
 
 # =========================================================
 # ЗАПУСК
