@@ -707,22 +707,18 @@ async def help_handler(message: Message):
 
 
 # =========================================================
-# УТРЕННЯЯ РАССЫЛКА (РАСПИСАНИЕ)
+# УТРЕННЯЯ РАССЫЛКА
 # =========================================================
 def get_russian_date_str() -> str:
     days = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
     months = ["янв.", "февр.", "марта", "апр.", "мая", "июня", "июля", "авг.", "сент.", "окт.", "нояб.", "дек."]
     now = datetime.now()
-    day_name = days[now.weekday()]
-    month_name = months[now.month - 1]
-    return f"{day_name}, {now.day} {month_name}"
+    return f"{days[now.weekday()]}, {now.day} {months[now.month - 1]}"
+
 
 async def send_morning_digest():
-    """Отправка утреннего плана и совета каждому пользователю"""
     if not db:
-        logger.warning("Firebase не подключен, утренняя рассылка пропущена.")
         return
-
     logger.info("🌅 Запуск утренней рассылки...")
     users_docs = await asyncio.to_thread(db.collection('users').get)
     date_str = get_russian_date_str()
@@ -731,16 +727,15 @@ async def send_morning_digest():
         user_data = doc.to_dict()
         user_id = user_data.get("user_id") or doc.id
         
-        norm_kcal = user_data.get("calories", 2000)
-        norm_p = user_data.get("protein", 100)
+        norm_kcal = user_data.get("calories") or user_data.get("norm") or 2000
+        norm_p = user_data.get("protein") or user_data.get("p") or 100
         goal = user_data.get("goal", "maintain")
         weight = user_data.get("weight", "")
 
-        # Запрашиваем у ИИ краткий утренний фокус/совет
         prompt = (
             f"Составь 1-2 коротких мотивационных предложения на утро для человека с целью '{goal}'. "
             f"Посоветуй, с чего лучше начать завтрак, чтобы набрать белок (норма {norm_p}г). "
-            "Пиши тепло, без официоза."
+            "Пиши тепло, поддерживающе, без строгости."
         )
         
         try:
@@ -758,7 +753,7 @@ async def send_morning_digest():
             f"<i>Неспешно, но уверенно — маленький шаг сегодня{target_weight_str}</i>"
         )
 
-       try:
+        try:
             await bot.send_message(chat_id=int(user_id), text=text)
             await asyncio.sleep(0.1)
         except Exception as e:
@@ -768,6 +763,58 @@ async def send_morning_digest():
 @dp.message(Command("test_morning"))
 async def test_morning_handler(message: Message):
     await send_morning_digest()
+
+
+# =========================================================
+# HEALTH CHECK ДЛЯ RENDER
+# =========================================================
+async def health_handler(request: web.Request):
+    return web.json_response({
+        "status": "ok",
+        "service": "food-telegram-bot",
+    })
+
+
+# =========================================================
+# ЗАПУСК
+# =========================================================
+async def main():
+    app = web.Application()
+    app.router.add_get("/", health_handler)
+    app.router.add_get("/health", health_handler)
+    
+    runner = web.AppRunner(app)
+    await runner.setup()
+    
+    port = int(os.getenv("PORT", "10000"))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    
+    try:
+        await site.start()
+        logger.info("HTTP-сервер запущен на порту %s", port)
+        
+        bot_info = await bot.get_me()
+        logger.info("Telegram подключен: @%s", bot_info.username)
+        
+        scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
+        scheduler.add_job(send_morning_digest, "cron", hour=9, minute=0)
+        scheduler.start()
+        logger.info("⏰ Планировщик утренней рассылки запущен (09:00 MSK)")
+
+        await bot.delete_webhook(drop_pending_updates=True)
+        logger.info("Polling запущен")
+        
+        await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+    except Exception:
+        logger.exception("Критическая ошибка запуска")
+        raise
+    finally:
+        await bot.session.close()
+        await runner.cleanup()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
 # =========================================================
 # ЗАПУСК
 # =========================================================
