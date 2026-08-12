@@ -41,7 +41,16 @@ if firebase_json_str:
 else:
     db = None
 
-bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+# --- ЖЕСТКАЯ ПРИВЯЗКА К IPv4 ДЛЯ ЗАЩИТЫ ОТ ТАЙМАУТОВ ТЕЛЕГРАМА ---
+import socket
+import aiohttp
+from aiogram.client.session.aiohttp import AiohttpSession
+
+connector = aiohttp.TCPConnector(family=socket.AF_INET)
+session = AiohttpSession(connector=connector)
+
+bot = Bot(token=TOKEN, session=session, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+# ----------------------------------------------------------------
 dp = Dispatcher()
 
 # --- НАСТРОЙКА КНОПКИ "МЕНЮ" СЛЕВА ВНИЗУ (СИНЯЯ) ---
