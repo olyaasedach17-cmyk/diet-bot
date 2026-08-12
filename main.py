@@ -52,7 +52,7 @@ BEPAID_SECRET_KEY = os.getenv("BEPAID_SECRET_KEY", "")
 
 # Данные владельца бота
 OWNER_NAME = "Оля"
-OWNER_LINK = "https://www.instagram.com/helga_aceofdach?igsh=MXhkNmF2NHgzM3JoNA%3D%3D&utm_source=qr"  # Вставьте ссылку на ваш профиль Инстаграм
+OWNER_LINK = "https://instagram.com/your_profile"
 
 if not BOT_TOKEN:
     raise RuntimeError("Не найден BOT_TOKEN")
@@ -123,6 +123,9 @@ class FoodStates(StatesGroup):
 class WeightStates(StatesGroup):
     waiting_for_weight = State()
 
+class ActivityStates(StatesGroup):
+    waiting_for_activity = State()
+
 # =========================================================
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # =========================================================
@@ -163,14 +166,12 @@ async def save_user_profile(user_id: int, data: dict):
         await asyncio.to_thread(db.collection('users').document(str(user_id)).set, data, merge=True)
 
 async def check_user_access(user_id: int) -> bool:
-    """Проверка доступа. Если у существующего пользователя еще нет триала — дает 14 дней с сегодняшнего дня."""
     user = await get_user_profile(user_id)
     if not user:
         return False
         
     now = datetime.now()
     
-    # 1. Проверка платной подписки
     premium_str = user.get("premium_until")
     if premium_str:
         try:
@@ -179,10 +180,8 @@ async def check_user_access(user_id: int) -> bool:
         except Exception:
             pass
 
-    # 2. Проверка бесплатного триала
     trial_str = user.get("trial_until")
     if not trial_str:
-        # Автоматически выдаем 14 дней с сегодняшнего дня для существующих пользователей
         new_trial_end = now + timedelta(days=14)
         await save_user_profile(user_id, {"trial_until": new_trial_end.isoformat()})
         return True
@@ -213,7 +212,8 @@ async def set_bot_description(bot: Bot):
         "🍽 Сфотографируй еду — Умная Тарелка определит состав, оценит граммовки, "
         "рассчитает КБЖУ и добавит приём пищи в дневник.\n\n"
         "🎤 Поймёт голосовое сообщение\n"
-        "🏋️ Составит домашнюю тренировку и учтёт сожжённые калории\n"
+        "🏋️ Составит программу тренировок под твой уровень\n"
+        "🔥 Посчитает сожжённые калории за любую активность\n"
         "💧 Поможет вести трекер выпитой воды\n"
         "⚖️ Проследит за динамикой веса и рассчитает дни до цели\n"
         "🧊 Соберёт меню из продуктов в холодильнике\n"
@@ -290,7 +290,7 @@ async def ask_ai(prompt: str, image_base64: str | None = None, model: str | None
         response = await ai_client.chat.completions.create(
             model=used_model,
             messages=[
-                {"role": "system", "content": "Ты нутрициолог. Отвечай кратко на русском языке."},
+                {"role": "system", "content": "Ты нутрициолог и персональный фитнес-тренер. Отвечай кратко, используй красивый HTML (<b>, <i>) без Markdown таблиц (|) и без заголовков markdown (###)."},
                 {"role": "user", "content": user_content},
             ],
             temperature=0.2,
@@ -393,7 +393,7 @@ async def send_today(message: Message, user_id: int | None = None):
         rem_kcal = norm_kcal - net_kcal
         status_text = f"Осталось на сегодня: <b>{rem_kcal} ккал</b>"
 
-    burned_str = f" <i>(-{burned_kcal} ккал тренировками)</i>" if burned_kcal > 0 else ""
+    burned_str = f" <i>(-{burned_kcal} ккал активностью)</i>" if burned_kcal > 0 else ""
 
     text = (
         f"{meals_text}"
@@ -434,16 +434,18 @@ async def start_handler(message: Message, state: FSMContext):
         "📸 считать КБЖУ по фото еды — просто сфоткай тарелку;\n"
         "📊 вести дневник, чтобы ты не выходил за свою норму;\n"
         "🎤 понимать голосовые сообщения;\n"
-        "🏋️ подбирать короткие домашние тренировки;\n"
+        "🏋️ подбирать программы тренировок (дома или в зале);\n"
+        "🔥 учитывать сожжённые калории за любую активность;\n"
         "💧 вести учёт выпитой воды;\n"
         "⚖️ отслеживать динамику веса и дни до цели;\n"
         "🧊 собирать меню из того, что лежит в холодильнике.\n\n"
+        "🎁 <b>Пробный период:</b> 14 дней полностью бесплатно! После этого доступ продолжится по подписке.\n\n"
         "Сначала короткий опрос — <b>4 вопроса</b>, меньше минуты. Он нужен, чтобы посчитать <b>твою</b> норму, а не среднюю по больнице."
     )
     
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="🚀 Начать", callback_data="start_onb")]
+            [InlineKeyboardButton(text="🚀 Начать (14 дней бесплатно)", callback_data="start_onb")]
         ]
     )
     
@@ -557,7 +559,8 @@ async def activity_handler(callback: CallbackQuery, state: FSMContext):
         f"🥩 Белки: {norm['protein']} г\n"
         f"🥑 Жиры: {norm['fat']} г\n"
         f"🍚 Углеводы: {norm['carbs']} г\n\n"
-        f"🎁 <b>Тебе активировано 14 дней бесплатного доступа!</b>\n\n"
+        f"🎁 <b>Тебе активировано 14 дней бесплатного доступа!</b>\n"
+        f"<i>По истечении 14 дней для продолжения использования понадобится подписка (от 15 BYN/мес).</i>\n\n"
         "Теперь пришли фотографию еды 📸"
     )
     await callback.message.answer("Готово! Пришли фото еды.", reply_markup=main_menu)
@@ -657,32 +660,141 @@ async def process_weight_update(message: Message, state: FSMContext):
     await message.answer(response_text)
 
 # =========================================================
-# ГЕНЕРАТОР ТРЕНИРОВОК
+# УМНЫЙ ГЕНЕРАТОР ТРЕНИРОВОК И ВВОД АКТИВНОСТИ
 # =========================================================
 @dp.message(F.text == "🏋️ Тренировка")
 @dp.message(Command("workout"))
-async def workout_handler(message: Message):
+async def workout_menu_handler(message: Message):
     if not await check_user_access(message.from_user.id):
         await send_paywall(message)
         return
 
-    user = await get_user_profile(message.from_user.id)
-    wait_msg = await message.answer("⏳ Составляю план домашней тренировки...")
+    text = (
+        "🏋️ <b>ТРЕНИРОВКИ И АКТИВНОСТЬ</b>\n\n"
+        "Выбери подходящий вариант тренировки на сегодня или впиши свою активность (бег, плавание, танцы):"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🏠 Дома · Лёгкая (Новичок 🟢)", callback_data="gen_workout_home_easy")],
+        [InlineKeyboardButton(text="🏠 Дома · Обычная (Средний 🟡)", callback_data="gen_workout_home_medium")],
+        [InlineKeyboardButton(text="🏋️ В зале · Базовая 🟢", callback_data="gen_workout_gym_easy")],
+        [InlineKeyboardButton(text="🏋️ В зале · Продвинутая 🔴", callback_data="gen_workout_gym_hard")],
+        [InlineKeyboardButton(text="✍️ Вписать свою активность", callback_data="enter_custom_activity")]
+    ])
+    await message.answer(text, reply_markup=kb)
+
+@dp.callback_query(F.data.startswith("gen_workout_"))
+async def generate_workout_callback(callback: CallbackQuery):
+    params = callback.data.replace("gen_workout_", "").split("_") # location, level
+    location = "дома без оборудования" if params[0] == "home" else "в тренажёрном зале с гантелями/тренажерами"
     
+    levels = {
+        "easy": "для новичка (короткая, без суставной нагрузки, суставная разминка)",
+        "medium": "средний уровень подготовки",
+        "hard": "для продвинутого (интенсивная силовая)"
+    }
+    level_str = levels.get(params[1], "средний уровень")
+
+    user = await get_user_profile(callback.from_user.id)
+    weight = user.get("weight", 70) if user else 70
+    goal = user.get("goal", "loss") if user else "loss"
+
+    await callback.message.edit_text("⏳ Подбираю программу тренировки...")
+
     prompt = (
-        f"Составь домашнюю тренировку без оборудования на 15-20 минут для человека с целью '{user.get('goal', 'loss')}'. "
-        "Укажи 4 упражнения, время/повторы и сожжённые калории."
+        f"Составь программу тренировки {location}. Уровень: {level_str}. Цель человека: '{goal}', вес: {weight} кг.\n\n"
+        "ТРЕБОВАНИЯ К ФОРМАТИРОВАНИЮ (КРИТИЧЕСКИ ВАЖНО):\n"
+        "1. НЕ ИСПОЛЬЗУЙ таблицы Markdown (символы |).\n"
+        "2. НЕ ИСПОЛЬЗУЙ заголовки Markdown (###).\n"
+        "3. Используй только HTML теги Telegram: <b>текст</b>, <i>текст</i>.\n"
+        "4. Выдавай список упражнений через эмодзи и списки (например: 1. <b>Приседания</b> — 3 подхода по 12 раз).\n\n"
+        "Структура ответа:\n"
+        "<b>[Заголовок тренировки]</b>\n"
+        "⏱ <b>Время:</b> ~20 мин | 🎯 <b>Фокус:</b> [группы мышц]\n\n"
+        "<b>Упражнения:</b>\n"
+        "1. ...\n"
+        "2. ...\n"
+        "3. ...\n"
+        "4. ...\n\n"
+        "🔥 <b>Примерный расход:</b> ~[число] ккал\n"
+        "💡 <i>Совет по технике или отдыху.</i>\n\n"
+        "Верни В КОНЦЕ строго строку вида: ESTIMATED_KCAL:[число] (например ESTIMATED_KCAL:160)"
     )
 
     try:
-        workout_plan = await ask_ai(prompt=prompt, model=AI_MODEL)
-        clean_plan = clean_html_tags(workout_plan)
+        raw_response = await ask_ai(prompt=prompt, model=AI_MODEL)
+        
+        # Извлекаем расчитанные калории
+        kcal_match = re.search(r"ESTIMATED_KCAL:(\d+)", raw_response)
+        est_kcal = int(kcal_match.group(1)) if kcal_match else 150
+        
+        clean_text = re.sub(r"ESTIMATED_KCAL:\d+", "", raw_response).strip()
+        clean_text = clean_html_tags(clean_text)
+
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="✅ Выполнил(а) (+150 ккал)", callback_data="done_workout_150")]
+            [InlineKeyboardButton(text=f"✅ Выполнил(а) (+{est_kcal} ккал)", callback_data=f"done_workout_{est_kcal}")]
         ])
-        await wait_msg.edit_text(clean_plan, reply_markup=kb)
-    except Exception:
-        await wait_msg.edit_text("Не удалось составить тренировку.")
+        await callback.message.edit_text(clean_text, reply_markup=kb)
+    except Exception as e:
+        logger.error(f"Ошибка тренировки: {e}")
+        await callback.message.edit_text("Не удалось составить тренировку. Попробуй ещё раз.")
+    await callback.answer()
+
+@dp.callback_query(F.data == "enter_custom_activity")
+async def enter_activity_callback(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(ActivityStates.waiting_for_activity)
+    await callback.message.edit_text(
+        "✍️ <b>Введи свою активность:</b>\n\n"
+        "Напиши текстом или наговори голосом, чем ты занимался(ась) и сколько времени.\n\n"
+        "Например: <i>«Пробежка 30 минут»</i> или <i>«Плавание в бассейне 45 минут»</i>"
+    )
+    await callback.answer()
+
+@dp.message(ActivityStates.waiting_for_activity)
+async def process_custom_activity(message: Message, state: FSMContext):
+    await state.clear()
+    wait_msg = await message.answer("⏳ Рассчитываю расход калорий...")
+    
+    user = await get_user_profile(message.from_user.id)
+    weight = user.get("weight", 70) if user else 70
+
+    prompt = (
+        f"Пользователь весом {weight} кг выполнил активность: \"{message.text}\".\n"
+        "Рассчитай примерный расход сожжённых калорий.\n"
+        "Верни строго JSON:\n"
+        "{\n"
+        '  "title": "название активности",\n'
+        '  "burned_kcal": 0,\n'
+        '  "comment": "короткая похвала"\n'
+        "}"
+    )
+
+    try:
+        res = await ask_ai(prompt=prompt, model=AI_MODEL)
+        act_data = extract_json(res)
+        
+        burned = int(act_data.get("burned_kcal", 150))
+        title = clean_html_tags(str(act_data.get("title", "Активность")))
+        comment = clean_html_tags(str(act_data.get("comment", "Отличная работа!")))
+
+        user_id = message.from_user.id
+        doc_id = f"{user_id}_{today_str()}"
+        
+        if db:
+            doc_ref = db.collection('diaries').document(doc_id)
+            doc = await asyncio.to_thread(doc_ref.get)
+            current_burned = doc.to_dict().get('burned_kcal', 0) if doc.exists else 0
+            new_burned = current_burned + burned
+            await asyncio.to_thread(doc_ref.set, {'burned_kcal': new_burned}, merge=True)
+
+        await wait_msg.edit_text(
+            f"🔥 <b>Зачтено: -{burned} ккал!</b>\n"
+            f"🏃 <b>Активность:</b> {title}\n\n"
+            f"💬 <i>{comment}</i>"
+        )
+        await send_today(message, user_id=user_id)
+    except Exception as e:
+        logger.error(f"Ошибка расчёта активности: {e}")
+        await wait_msg.edit_text("Не удалось рассчитать активность. Попробуй ещё раз.")
 
 @dp.callback_query(F.data.startswith("done_workout_"))
 async def done_workout_callback(callback: CallbackQuery):
@@ -697,7 +809,8 @@ async def done_workout_callback(callback: CallbackQuery):
         new_burned = current_burned + burned_kcal
         await asyncio.to_thread(doc_ref.set, {'burned_kcal': new_burned}, merge=True)
         await callback.answer(f"🔥 Зачтено -{burned_kcal} ккал!")
-        await callback.message.edit_text(f"{callback.message.text}\n\n✅ <b>Сожжено {burned_kcal} ккал!</b>")
+        await callback.message.edit_text(f"{callback.message.text}\n\n✅ <b>Сожжено {burned_kcal} ккал! Зачтено в дневник.</b>")
+        await send_today(callback.message, user_id=user_id)
 
 # =========================================================
 # ГОЛОСОВЫЕ СООБЩЕНИЯ (WHISPER)
@@ -721,11 +834,19 @@ async def voice_handler(message: Message, state: FSMContext):
             file=buffer
         )
         text = transcript.text
-        await wait_msg.edit_text(f"🗣 <b>Вы сказали:</b> «{clean_html_tags(text)}»\n\n⏳ Считаю...")
+        await wait_msg.edit_text(f"🗣 <b>Вы сказали:</b> «{clean_html_tags(text)}»\n\n⏳ Распознаю...")
 
-        prompt = f"Пользователь наговорил голосом еду: \"{text}\". Рассчитай калории и БЖУ."
-        ai_response = await ask_ai(prompt=prompt, model=AI_MODEL)
-        await message.answer(clean_html_tags(ai_response))
+        # Проверяем: речь про тренировку/активность или про еду
+        prompt_check = f"Текст: \"{text}\". Если это про спорт/тренировку/активность — ответь 'ACTIVITY'. Если про еду/приём пищи — ответь 'FOOD'."
+        check_res = await ask_ai(prompt=prompt_check, model=AI_MODEL)
+
+        if "ACTIVITY" in check_res:
+            message.text = text
+            await process_custom_activity(message, state)
+        else:
+            prompt = f"Пользователь наговорил голосом еду: \"{text}\". Рассчитай калории и БЖУ."
+            ai_response = await ask_ai(prompt=prompt, model=AI_MODEL)
+            await message.answer(clean_html_tags(ai_response))
     except Exception as e:
         logger.error(f"Ошибка голосового: {e}")
         await wait_msg.edit_text("Не удалось распознать голосовое сообщение.")
@@ -955,7 +1076,7 @@ async def bepaid_webhook_handler(request: web.Request):
         data = await request.json()
         transaction = data.get("transaction", {})
         if transaction.get("status") == "successful":
-            tracking_id = transaction.get("tracking_id", "")  # sub_USERID_MONTHS_TIMESTAMP
+            tracking_id = transaction.get("tracking_id", "")
             parts = tracking_id.split("_")
             user_id = parts[1]
             months = int(parts[2]) if len(parts) > 2 else 1
@@ -1010,7 +1131,6 @@ async def main():
         bot_info = await bot.get_me()
         logger.info("Telegram подключен: @%s", bot_info.username)
         
-        # Установка официального описания карточки бота
         await set_bot_description(bot)
         
         scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
