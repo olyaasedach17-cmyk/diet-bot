@@ -3,13 +3,17 @@ import os
 import base64
 import json
 import re
+import socket
+import logging
 from datetime import datetime, timezone, timedelta
 
 from dotenv import load_dotenv
 from aiohttp import web
+import aiohttp
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
 from aiogram.types import (Message, CallbackQuery, InlineKeyboardMarkup, 
                            InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, BotCommand)
@@ -17,17 +21,17 @@ from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, APIConnectionError, AuthenticationError, BadRequestError, RateLimitError
 import firebase_admin
 from firebase_admin import credentials, firestore
 
 load_dotenv()
+logger = logging.getLogger(__name__)
 
 # --- ИНИЦИАЛИЗАЦИЯ ИИ ---
 TOKEN = os.getenv('BOT_TOKEN')
-# По умолчанию ставим Луну, если в переменных окружения вдруг пусто
 AI_MODEL = os.getenv('AI_MODEL', 'openai/gpt-5.6-luna') 
-client = AsyncOpenAI(api_key=os.getenv('AI_API_KEY'), base_url=os.getenv('AI_BASE_URL'))
+client = AsyncOpenAI(api_key=os.getenv('AI_API_KEY'), base_url=os.getenv('AI_BASE_URL', 'https://api.polza.ai/api/v1'))
 
 # --- FIREBASE ---
 firebase_json_str = os.getenv('FIREBASE_JSON')
@@ -41,20 +45,12 @@ if firebase_json_str:
 else:
     db = None
 
-# --- ЖЕСТКАЯ ПРИВЯЗКА К IPv4 ДЛЯ ЗАЩИТЫ ОТ ТАЙМАУТОВ ТЕЛЕГРАМА ---
-import socket
-import aiohttp
-from aiogram.client.session.aiohttp import AiohttpSession
-
-connector = aiohttp.TCPConnector(family=socket.AF_INET)
-session = AiohttpSession(connector=connector)
-
-bot = Bot(token=TOKEN, session=session, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-# ----------------------------------------------------------------
+# Глобальные переменные (бот инициализируется при запуске)
+bot = None
 dp = Dispatcher()
 
 # --- НАСТРОЙКА КНОПКИ "МЕНЮ" СЛЕВА ВНИЗУ (СИНЯЯ) ---
-async def set_bot_commands(bot: Bot):
+async def set_bot_commands(b: Bot):
     commands = [
         BotCommand(command="today", description="Дневник за сегодня"),
         BotCommand(command="week", description="Неделя в цифрах"),
@@ -64,7 +60,7 @@ async def set_bot_commands(bot: Bot):
         BotCommand(command="profile", description="Профиль и цель"),
         BotCommand(command="help", description="Как пользоваться")
     ]
-    await bot.set_my_commands(commands)
+    await b.set_my_commands(commands)
 
 # --- ГЛАВНАЯ КЛАВИАТУРА ВНИЗУ (КАК НА СКРИНЕ) ---
 main_menu = ReplyKeyboardMarkup(
@@ -135,9 +131,21 @@ async def ask_ai(image_base64=None, text_prompt=None, system_prompt="Ты AI-н�
     try:
         res = await client.chat.completions.create(model=AI_MODEL, messages=messages, temperature=0.2)
         return res.choices[0].message.content
+    except AuthenticationError:
+        logger.exception("🔥 Ошибка 401: Неверный API ключ Polza")
+        return "Ошибка авторизации: неверный ключ AI."
+    except BadRequestError:
+        logger.exception("🔥 Ошибка 400: Неверный запрос или модель")
+        return "Сервис ИИ не принял запрос. Проверь название модели."
+    except RateLimitError:
+        logger.exception("🔥 Ошибка 429: Лимит запросов")
+        return "Закончился лимит запросов к ИИ."
+    except APIConnectionError:
+        logger.exception("🔥 Ошибка связи: Неверный URL")
+        return "Не удалось подключиться к серверам ИИ."
     except Exception as e:
-        print(f"🔥 ОШИБКА ИИ: {e}")
-        return f"Ошибка связи с нейросетью. Попробуй еще раз."
+        logger.exception(f"🔥 Неизвестная ошибка ИИ: {e}")
+        return "Произошла техническая ошибка нейросети."
 
 # ==========================================
 # 🚀 ОНБОРДИНГ
@@ -385,7 +393,6 @@ async def cmd_today(message: Message, state: FSMContext = None, user_id: str = N
     msg = await message.answer("⏳ Обновляю дневник...")
     meals_text = "\n\n".join(meals)
     
-    # ИСПРАВЛЕНА ОШИБКА KEYERROR ЗДЕСЬ (используем .get)
     prompt = (
         f"Список съеденного:\n{meals_text}\n\nНорма: {u_data.get('norm', 0)} ккал, Б:{u_data.get('p', 0)} Ж:{u_data.get('f', 0)} У:{u_data.get('c', 0)}\n"
         "Сделай красивый дневник как на фото. Шаблон:\n"
@@ -453,8 +460,14 @@ async def health_check(request):
     return web.Response(text="Я бот, я жив, не убивай меня, Timeweb!")
 
 async def main():
+    global bot
     try:
-        # ЗАПУСК ФЕЙКОВОГО СЕРВЕРА ДЛЯ TIMEWEB
+        # 1. ЗАПУСК БОТА С ЖЕСТКИМ IPv4 ДЛЯ ЗАЩИТЫ ОТ ТАЙМАУТОВ (Теперь в правильном месте!)
+        connector = aiohttp.TCPConnector(family=socket.AF_INET)
+        session = AiohttpSession(connector=connector)
+        bot = Bot(token=TOKEN, session=session, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+
+        # 2. ЗАПУСК ФЕЙКОВОГО СЕРВЕРА ДЛЯ TIMEWEB
         app = web.Application()
         app.router.add_get('/', health_check)
         runner = web.AppRunner(app)
@@ -464,18 +477,16 @@ async def main():
         await site.start()
         print(f"✅ Сервер-обманка запущен на порту {port}")
         
-        # ЗАЩИТА ОТ ТАЙМАУТОВ ТЕЛЕГРАМА ПРИ СТАРТЕ
+        # 3. НАСТРОЙКА ТЕЛЕГРАМА С ЗАЩИТОЙ
         try:
-            print("⏳ Настраиваем синюю кнопку меню...")
             await set_bot_commands(bot)
         except Exception as e:
-            print(f"⚠️ Телеграм тормозит с меню, пропускаем: {e}")
+            print(f"⚠️ Телеграм тормозит с меню: {e}")
             
         try:
-            print("⏳ Очищаем старые зависшие сообщения...")
             await bot.delete_webhook(drop_pending_updates=True)
         except Exception as e:
-            print(f"⚠️ Телеграм тормозит с очисткой, пропускаем: {e}")
+            print(f"⚠️ Телеграм тормозит с очисткой: {e}")
             
         print("🚀 БОТ УСПЕШНО ЗАПУЩЕН И ГОТОВ К РАБОТЕ!")
         await dp.start_polling(bot)
