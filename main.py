@@ -254,13 +254,14 @@ def result_keyboard() -> InlineKeyboardMarkup:
         ]
     )
 
-async def send_today(message: Message):
-    user = await get_user_profile(message.from_user.id)
+async def send_today(message: Message, user_id: int | None = None):
+    target_user_id = user_id or message.from_user.id
+    user = await get_user_profile(target_user_id)
     if not user:
         await message.answer("Сначала нажмите /start.")
         return
         
-    meals = await get_today_meals(message.from_user.id)
+    meals = await get_today_meals(target_user_id)
     
     total_kcal = sum(m.get('calories', 0) for m in meals)
     total_p = sum(m.get('protein', 0) for m in meals)
@@ -282,7 +283,6 @@ async def send_today(message: Message):
             f"🔥 {meal.get('calories', 0)} ккал · Б {meal.get('protein', 0)} г · Ж {meal.get('fat', 0)} г · У {meal.get('carbs', 0)} г\n\n"
         )
         
-    # Формируем логику перебора / остатка калорий
     if total_kcal > norm_kcal:
         overage_kcal = total_kcal - norm_kcal
         status_text = (
@@ -307,7 +307,6 @@ async def send_today(message: Message):
         f"{status_text}"
     )
     await message.answer(text)
-
 # =========================================================
 # ОНБОРДИНГ
 # =========================================================
@@ -627,9 +626,9 @@ async def save_meal_handler(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     
     await callback.message.edit_text("✅ Приём пищи сохранён в дневник.")
-    await send_today(callback.message)
+    # Передаем ID человека, нажавшего на кнопку:
+    await send_today(callback.message, user_id=callback.from_user.id)
     await callback.answer()
-
 @dp.callback_query(F.data == "food_delete")
 async def delete_food_handler(callback: CallbackQuery, state: FSMContext):
     await state.clear()
