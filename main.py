@@ -18,6 +18,7 @@ from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
+    BotCommand,
     CallbackQuery,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -250,6 +251,23 @@ async def set_bot_description(bot: Bot):
         await bot.set_my_description(description)
     except Exception as e:
         logger.warning(f"Не удалось установить описание бота: {e}")
+
+async def set_bot_commands(bot: Bot):
+    commands = [
+        BotCommand(command="today", description="📊 Дневник за сегодня"),
+        BotCommand(command="treat", description="😋 Вкусняшка"),
+        BotCommand(command="fridge", description="🥗 Что приготовить"),
+        BotCommand(command="workout", description="🏋️ Тренировка"),
+        BotCommand(command="ask", description="💬 Спросить нутрициолога"),
+        BotCommand(command="weight", description="⚖️ Динамика веса"),
+        BotCommand(command="profile", description="👤 Профиль и норма"),
+        BotCommand(command="reset", description="🔄 Сброс профиля (тест)"),
+        BotCommand(command="help", description="❓ Помощь"),
+    ]
+    try:
+        await bot.set_my_commands(commands)
+    except Exception as e:
+        logger.warning(f"Не удалось установить команды: {e}")
 
 async def get_today_meals(user_id: int) -> list:
     if not db:
@@ -1380,7 +1398,7 @@ async def process_buy_callback(callback: CallbackQuery):
         await callback.message.edit_text("Ошибка формирования счета. Напишите в поддержку.")
 
 # =========================================================
-# КНОПКИ И КОМАНДЫ
+# КНОПКИ, КОМАНДЫ И РЕДАКТИРОВАНИЕ ПРОФИЛЯ
 # =========================================================
 @dp.message(F.text == "📊 Сегодня")
 @dp.message(Command("today"))
@@ -1445,10 +1463,53 @@ async def profile_handler(message: Message):
         reply_markup=kb
     )
 
+@dp.callback_query(F.data == "profile_edit_allergies")
+async def profile_edit_allergies_handler(callback: CallbackQuery):
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🌰 Орехи", callback_data="update_alg_nuts"), InlineKeyboardButton(text="🥛 Лактоза", callback_data="update_alg_lactose")],
+        [InlineKeyboardButton(text="🌾 Глютен", callback_data="update_alg_gluten"), InlineKeyboardButton(text="🐟 Рыба / Морепродукты", callback_data="update_alg_seafood")],
+        [InlineKeyboardButton(text="✍️ Написать текстом", callback_data="update_alg_custom")],
+        [InlineKeyboardButton(text="❌ Нет аллергий", callback_data="update_alg_none")],
+    ])
+    await callback.message.edit_text(
+        "🛡 <b>Выбери новые настройки аллергий и ограничений:</b>\n"
+        "<i>Ингредиенты сразу исключатся из рецептов.</i>",
+        reply_markup=kb
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("update_alg_"))
+async def update_allergy_callback_handler(callback: CallbackQuery, state: FSMContext):
+    alg_type = callback.data.replace("update_alg_", "")
+    
+    if alg_type == "custom":
+        await state.set_state(Onboarding.custom_allergy)
+        await callback.message.edit_text("✍️ <b>Напиши текстом, на что у тебя аллергия:</b>\n\nНапример: <i>«Арахис, мёд, цитрусовые»</i>")
+        await callback.answer()
+        return
+
+    allergies_map = {
+        "nuts": "Аллергия на орехи",
+        "lactose": "Непереносимость лактозы",
+        "gluten": "Непереносимость глютена",
+        "seafood": "Аллергия на рыбу и морепродукты",
+        "none": "Нет"
+    }
+    new_allergy = allergies_map.get(alg_type, "Нет")
+    await save_user_profile(callback.from_user.id, {"allergies": new_allergy})
+    await callback.message.edit_text(f"✅ <b>Аллергии обновлены:</b> {new_allergy}")
+    await callback.answer()
+
+@dp.callback_query(F.data == "profile_recount_norm")
+async def profile_recount_norm_handler(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await start_onboarding_callback(callback)
+
 @dp.message(F.text == "❓ Помощь")
 @dp.message(Command("help"))
 async def help_handler(message: Message):
     await message.answer("📸 Пришли фото еды — я посчитаю КБЖУ.\n🗣 Или наговори голосом!")
+
 # =========================================================
 # УТРЕННЯЯ РАССЫЛКА
 # =========================================================
@@ -1565,46 +1626,6 @@ async def bepaid_webhook_handler(request: web.Request):
 
 async def health_handler(request: web.Request):
     return web.json_response({"status": "ok", "service": "food-telegram-bot"})
-    
-# =========================================================
-# НАСТРОЙКА КОМАНД МЕНЮ (ВСТАВИТЬ СЮДА)
-# =========================================================
-from aiogram.types import BotCommand
-
-async def set_bot_commands(bot: Bot):
-    commands = [
-        BotCommand(command="today", description="📊 Дневник за сегодня"),
-        BotCommand(command="treat", description="😋 Вкусняшка"),
-        BotCommand(command="fridge", description="🥗 Что приготовить"),
-        BotCommand(command="workout", description="🏋️ Тренировка"),
-        BotCommand(command="ask", description="💬 Спросить нутрициолога"),
-        BotCommand(command="weight", description="⚖️ Динамика веса"),
-        BotCommand(command="profile", description="👤 Профиль и норма"),
-        BotCommand(command="reset", description="🔄 Сброс профиля (тест)"),
-        BotCommand(command="help", description="❓ Помощь"),
-    ]
-    try:
-        await bot.set_my_commands(commands)
-    except Exception as e:
-        logger.warning(f"Не удалось установить команды: {e}")
-
-# =========================================================
-# ЗАПУСК (ЭТО ДОЛЖНО БЫТЬ В САМОМ НИЗУ)
-# =========================================================
-async def main():
-    app = web.Application()
-    # ... тут остальной код запуска ...
-    
-    try:
-        await site.start()
-        logger.info("HTTP-сервер запущен на порту %s", port)
-        
-        bot_info = await bot.get_me()
-        logger.info("Telegram подключен: @%s", bot_info.username)
-        
-        await set_bot_description(bot)
-        await set_bot_commands(bot)  # <--- ВОТ ТУТ ОНА ВЫЗЫВАЕТСЯ
-        # ...
 
 # =========================================================
 # ЗАПУСК
