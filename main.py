@@ -1044,8 +1044,10 @@ def get_russian_date_str() -> str:
 async def send_morning_digest():
     if not db:
         return
+    logger.info("🌅 Запуск утренней рассылки...")
     users_docs = await asyncio.to_thread(db.collection('users').get)
     date_str = get_russian_date_str()
+    now = datetime.now()
 
     for doc in users_docs:
         user_data = doc.to_dict()
@@ -1053,9 +1055,48 @@ async def send_morning_digest():
         norm_kcal = user_data.get("calories", 2000)
         norm_p = user_data.get("protein", 100)
 
+        # Расчёт статуса подписки / бесплатного триала
+        trial_str = user_data.get("trial_until")
+        premium_str = user_data.get("premium_until")
+        
+        status_text = ""
+        is_premium = False
+        
+        # 1. Если активна платная подписка
+        if premium_str:
+            try:
+                prem_end = datetime.fromisoformat(premium_str)
+                if now < prem_end:
+                    is_premium = True
+                    days_prem = (prem_end.date() - now.date()).days
+                    status_text = f"💎 <b>Подписка активна:</b> осталось {days_prem} дн."
+            except Exception:
+                pass
+
+        # 2. Если действует бесплатный период
+        if not is_premium:
+            if trial_str:
+                try:
+                    trial_end = datetime.fromisoformat(trial_str)
+                    days_left = (trial_end.date() - now.date()).days
+                    
+                    if days_left > 1:
+                        status_text = f"🎁 <b>Пробный период:</b> осталось {days_left} дн. бесплатно"
+                    elif days_left == 1:
+                        status_text = "🎁 <b>Пробный период:</b> остался 1 день!"
+                    elif days_left == 0:
+                        status_text = "⏳ <b>Пробный период:</b> заканчивается сегодня!"
+                    else:
+                        status_text = "🔒 <b>Пробный период завершён.</b> Выбери подписку для продления доступа."
+                except Exception:
+                    status_text = ""
+
+        status_block = f"\n{status_text}\n" if status_text else ""
+
         text = (
             f"Доброе утро! Сегодня {date_str} ☀️\n\n"
-            f"План на день: <b>{norm_kcal} ккал</b>, <b>Б {norm_p} г</b>.\n\n"
+            f"План на день: <b>{norm_kcal} ккал</b>, <b>Б {norm_p} г</b>.\n"
+            f"{status_block}\n"
             f"<i>Неспешно, но уверенно — маленький шаг сегодня приближает к цели!</i>"
         )
         try:
