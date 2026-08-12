@@ -455,13 +455,24 @@ async def main():
         await site.start()
         print(f"✅ Сервер-обманка запущен на порту {port}")
         
-        # Подключаем синюю кнопку команд
-        await set_bot_commands(bot)
-        
-        await bot.delete_webhook(drop_pending_updates=True)
+        # ЗАЩИТА ОТ ТАЙМАУТОВ ТЕЛЕГРАМА ПРИ СТАРТЕ
+        try:
+            print("⏳ Настраиваем синюю кнопку меню...")
+            await set_bot_commands(bot)
+        except Exception as e:
+            print(f"⚠️ Телеграм тормозит с меню, пропускаем: {e}")
+            
+        try:
+            print("⏳ Очищаем старые зависшие сообщения...")
+            await bot.delete_webhook(drop_pending_updates=True)
+        except Exception as e:
+            print(f"⚠️ Телеграм тормозит с очисткой, пропускаем: {e}")
+            
+        print("🚀 БОТ УСПЕШНО ЗАПУЩЕН И ГОТОВ К РАБОТЕ!")
         await dp.start_polling(bot)
+        
     except Exception as e:
-        print(f"Ошибка: {e}")
+        print(f"🛑 Критическая ошибка: {e}")
 
 if __name__ == "__main__":
     asyncio.run(main())
