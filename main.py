@@ -141,7 +141,7 @@ async def get_user_profile(user_id: int) -> dict | None:
         
     data = doc.to_dict()
     
-    # Совместимость со старыми и новыми названиями полей в Firebase
+    # Совместимость со старыми (norm, p, f, c) и новыми (calories, protein, fat, carbs) полями
     calories = data.get('calories') or data.get('norm') or 2000
     protein = data.get('protein') or data.get('p') or 100
     fat = data.get('fat') or data.get('f') or 70
@@ -153,7 +153,6 @@ async def get_user_profile(user_id: int) -> dict | None:
     data['carbs'] = int(carbs)
     
     return data
-
 async def save_user_profile(user_id: int, data: dict):
     if db:
         await asyncio.to_thread(db.collection('users').document(str(user_id)).set, data, merge=True)
