@@ -1118,79 +1118,132 @@ async def process_nutritionist_question(message: Message, state: FSMContext):
         await wait_msg.edit_text("Не удалось получить ответ. Попробуй переформулировать вопрос.")
 
 # =========================================================
-# УНИВЕРСАЛЬНАЯ ОБРАБОТКА ГОЛОСОВЫХ СООБЩЕНИЙ (WHISPER)
+# УМНЫЙ ИИ-МАРШРУТИЗАТОР (ГОЛОС И ЛЮБОЙ ТЕКСТ)
 # =========================================================
+async def process_smart_input(text: str, message: Message, state: FSMContext, wait_msg: Message):
+    try:
+        # 1. ИИ определяет, что именно написал/сказал человек
+        router_prompt = (
+            f"Текст пользователя: \"{text}\".\n"
+            "Определи намерение. Ответь строго ОДНИМ СЛОВОМ:\n"
+            "ACTIVITY - если речь о тренировке, шагах, спорте.\n"
+            "FOOD - если описывается съеденная еда или блюдо (например: 'арахисовая паста 10г').\n"
+            "QUESTION - если это вопрос про здоровье, питание, вес, совет, похудение или просто общение."
+        )
+        intent = await ask_ai(prompt=router_prompt, model=AI_MODEL)
+
+        # 2. Обработка ТРЕНИРОВКИ
+        if "ACTIVITY" in intent:
+            user = await get_user_profile(message.from_user.id)
+            weight = user.get("weight", 70) if user else 70
+            prompt = (
+                f"Пользователь весом {weight} кг выполнил: \"{text}\".\n"
+                "Рассчитай примерный расход сожжённых калорий.\n"
+                "Верни строго JSON: {\"title\": \"название\", \"burned_kcal\": 0, \"comment\": \"похвала\"}"
+            )
+            act_data = extract_json(await ask_ai(prompt=prompt, model=AI_MODEL))
+            await state.update_data(calculated_activity=act_data)
+            
+            out_text = (
+                f"🏃 <b>Активность:</b> {clean_html_tags(str(act_data.get('title')))}\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                f"🔥 Расход: <b>{act_data.get('burned_kcal', 150)} ккал</b>\n\n"
+                f"💬 <i>{clean_html_tags(str(act_data.get('comment')))}</i>\n\n"
+                "Добавить активность в дневник?"
+            )
+            await wait_msg.edit_text(out_text, reply_markup=activity_result_keyboard())
+
+        # 3. Обработка ЕДЫ
+        elif "FOOD" in intent:
+            prompt = (
+                f"Пользователь съел: \"{text}\".\n"
+                "Рассчитай калории и БЖУ.\n"
+                "Верни строго JSON:\n"
+                "{\n\"title\": \"название\", \"calories\": 0, \"protein\": 0, \"fat\": 0, \"carbs\": 0, \"comment\": \"короткий комментарий без ругани\"\n}"
+            )
+            food_data = extract_json(await ask_ai(prompt=prompt, model=AI_MODEL))
+            await state.update_data(calculated_food=food_data)
+
+            out_text = (
+                f"🍽 <b>{clean_html_tags(str(food_data.get('title')))}</b>\n━━━━━━━━━━━━━━━━━━━━\n"
+                f"🔥 Калории: <b>{food_data.get('calories', 0)} ккал</b>\n"
+                f"🥩 Белки: {food_data.get('protein', 0)} г\n"
+                f"🥑 Жиры: {food_data.get('fat', 0)} г\n"
+                f"🍚 Углеводы: {food_data.get('carbs', 0)} г\n\n"
+                f"💬 <i>{clean_html_tags(str(food_data.get('comment')))}</i>\n\n"
+                "Внести приём пищи в дневник?"
+            )
+            await wait_msg.edit_text(out_text, reply_markup=result_keyboard())
+
+        # 4. Обработка ВОПРОСА НУТРИЦИОЛОГУ
+        else:
+            user = await get_user_profile(message.from_user.id) or {}
+            meals = await get_today_meals(message.from_user.id)
+            meals_summary = ", ".join([m.get("title", "") for m in meals]) or "Ещё не вносил(а)"
+
+            prompt = (
+                f"Пользователь пишет: \"{text}\".\n\n"
+                f"Контекст профиля:\n"
+                f"- Цель: {user.get('goal', 'loss')}\n"
+                f"- Вес: {user.get('weight', 70)} кг\n"
+                f"- Норма калорий: {user.get('calories', 2000)} ккал\n"
+                f"- Аллергии: {user.get('allergies', 'Нет')}\n"
+                f"- Съедено сегодня: {meals_summary}\n\n"
+                "Ответь как профессиональный, эмпатичный нутрициолог. Помоги советом. "
+                "Используй HTML теги (<b>, <i>). Без списков с решётками (###)."
+            )
+            answer = await ask_ai(prompt=prompt, model=AI_MODEL)
+            await wait_msg.edit_text(clean_html_tags(answer))
+
+    except Exception as e:
+        logger.error(f"Ошибка ИИ-маршрутизатора: {e}")
+        await wait_msg.edit_text("Не смог разобрать сообщение. Попробуй переформулировать.")
+
+
+# === ОБРАБОТЧИК ГОЛОСОВЫХ СООБЩЕНИЙ ===
 @dp.message(F.voice)
 async def voice_handler(message: Message, state: FSMContext):
     if not await check_user_access(message.from_user.id):
-        await send_paywall(message)
-        return
+        return await send_paywall(message)
 
-    current_state = await state.get_state()
     wait_msg = await message.answer("Слушаю голосовое... 🎧")
-
     try:
         voice_file = await bot.get_file(message.voice.file_id)
         buffer = io.BytesIO()
         await bot.download_file(voice_file.file_path, destination=buffer)
         buffer.name = "voice.ogg"
 
-        transcript = await ai_client.audio.transcriptions.create(
-            model="whisper-1", 
-            file=buffer
-        )
+        transcript = await ai_client.audio.transcriptions.create(model="whisper-1", file=buffer)
         text = transcript.text
-        await wait_msg.edit_text(f"🗣 <b>Вы сказали:</b> «{clean_html_tags(text)}»\n\n⏳ Распознаю...")
-
-        if current_state == TreatStates.waiting_for_treat.state:
-            message.text = text
-            await process_treat_input(message, state)
-            return
-
-        if current_state == ActivityStates.waiting_for_activity.state:
-            message.text = text
-            await process_custom_activity(message, state)
-            return
-
-        if current_state == AskStates.waiting_for_question.state:
-            message.text = text
-            await process_nutritionist_question(message, state)
-            return
-
-        prompt_check = f"Текст: \"{text}\". Если это про спорт/тренировку/активность/шаги — ответь 'ACTIVITY'. Если про еду/приём пищи/десерт — ответь 'FOOD'."
-        check_res = await ask_ai(prompt=prompt_check, model=AI_MODEL)
-
-        if "ACTIVITY" in check_res:
-            message.text = text
-            await process_custom_activity(message, state)
-        else:
-            prompt = (
-                f"Пользователь наговорил голосом приём пищи: \"{text}\".\n"
-                "Рассчитай калории и БЖУ.\n"
-                "Верни строго JSON:\n"
-                "{\n\"title\": \"название блюда\", \"calories\": 0, \"protein\": 0, \"fat\": 0, \"carbs\": 0, \"comment\": \"короткий комментарий\"\n}"
-            )
-            result = await ask_ai(prompt=prompt, model=AI_MODEL)
-            food_data = extract_json(result)
-            await state.update_data(calculated_food=food_data)
-
-            title = clean_html_tags(str(food_data.get("title", "Приём пищи")))
-            comment = clean_html_tags(str(food_data.get("comment", "")))
-
-            text_out = (
-                f"🍽 <b>{title}</b>\n━━━━━━━━━━━━━━━━━━━━\n"
-                f"🔥 Калории: <b>{food_data.get('calories', 0)} ккал</b>\n"
-                f"🥩 Белки: {food_data.get('protein', 0)} г\n"
-                f"🥑 Жиры: {food_data.get('fat', 0)} г\n"
-                f"🍚 Углеводы: {food_data.get('carbs', 0)} г\n\n💬 {comment}\n\n"
-                "Внести этот приём пищи в дневник?"
-            )
-            await wait_msg.edit_text(text_out, reply_markup=result_keyboard())
-
+        
+        await wait_msg.edit_text(f"🗣 <b>Вы сказали:</b> «{clean_html_tags(text)}»\n\n⏳ Думаю...")
+        
+        # Направляем расшифрованный текст в умный обработчик
+        await process_smart_input(text, message, state, wait_msg)
     except Exception as e:
-        logger.error(f"Ошибка голосового: {e}")
-        await wait_msg.edit_text("Не удалось распознать голосовое сообщение. Попробуй еще раз или напиши текстом.")
+        logger.error(f"Ошибка аудио: {e}")
+        await wait_msg.edit_text("Не удалось распознать голосовое сообщение.")
 
+
+# === ОБРАБОТЧИК ЛЮБОГО ПРОСТОГО ТЕКСТА ===
+@dp.message(F.text)
+async def universal_text_handler(message: Message, state: FSMContext):
+    if not await check_user_access(message.from_user.id):
+        return await send_paywall(message)
+
+    # Игнорируем команды и системные кнопки меню
+    if message.text.startswith('/'): return
+    known_buttons = ["📊 Сегодня", "😋 Вкусняшка", "🥗 Что приготовить", "🏋️ Тренировка", "💬 Спросить нутрициолога", "⚖️ Вес", "👤 Профиль", "❓ Помощь"]
+    if message.text in known_buttons: return
+
+    # Игнорируем, если бот в данный момент ждёт ввода конкретных данных (вес, рецепт, аллергия)
+    current_state = await state.get_state()
+    if current_state in [WeightStates.waiting_for_weight.state, FoodStates.waiting_for_recipe.state, Onboarding.custom_allergy.state, FoodStates.correcting.state]:
+        return
+
+    wait_msg = await message.answer("🤔 Читаю сообщение...")
+    # Направляем текст в умный обработчик
+    await process_smart_input(message.text, message, state, wait_msg)
 # =========================================================
 # ФОТО ЕДЫ
 # =========================================================
