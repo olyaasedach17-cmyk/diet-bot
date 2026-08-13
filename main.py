@@ -53,7 +53,6 @@ AI_VISION_MODEL = os.getenv("AI_VISION_MODEL") or AI_MODEL
 BEPAID_SHOP_ID = os.getenv("BEPAID_SHOP_ID", "")
 BEPAID_SECRET_KEY = os.getenv("BEPAID_SECRET_KEY", "")
 
-# Данные владельца бота
 OWNER_NAME = "Оля"
 OWNER_LINK = "https://instagram.com/your_profile"
 
@@ -319,7 +318,6 @@ def extract_json(text: str) -> dict:
     
     data = json.loads(match.group(0))
     
-    # === ПРОГРАММНЫЙ ПЕРЕСЧЁТ КАЛОРИЙ (ФОРМУЛА 4/9/4) ===
     p = float(data.get("protein", 0) or 0)
     f = float(data.get("fat", 0) or 0)
     c = float(data.get("carbs", 0) or 0)
@@ -501,7 +499,7 @@ async def send_today(message: Message, user_id: int | None = None):
     await message.answer(text, reply_markup=kb)
 
 # =========================================================
-# ОНБОРДИНГ И НАСТРОЙКИ (С АЛЛЕРГИЯМИ)
+# ГЛАВНЫЕ КОМАНДЫ И КНОПКИ МЕНЮ (ПРИОРИТЕТНЫЕ)
 # =========================================================
 @dp.message(CommandStart())
 async def start_handler(message: Message, state: FSMContext):
@@ -537,6 +535,159 @@ async def start_handler(message: Message, state: FSMContext):
     await message.answer(welcome_text, reply_markup=main_menu)
     await message.answer("Жми кнопку ниже 👇", reply_markup=kb)
 
+@dp.message(F.text == "📊 Сегодня")
+@dp.message(Command("today"))
+async def today_handler(message: Message, state: FSMContext):
+    await state.clear()
+    await send_today(message)
+
+@dp.message(F.text == "👤 Профиль")
+@dp.message(Command("profile"))
+async def profile_handler(message: Message, state: FSMContext):
+    await state.clear()
+    user = await get_user_profile(message.from_user.id)
+    if not user:
+        await message.answer("Сначала нажми /start.")
+        return
+
+    diet_titles = {
+        "all": "🍏 Ем всё",
+        "nutri": "🥦 Нутри-подход",
+        "veg": "🥕 Вегетарианец",
+        "allergy": "🚫 Без лактозы и глютена"
+    }
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🛡 Изменить аллергии", callback_data="profile_edit_allergies")],
+        [InlineKeyboardButton(text="⚙️ Пересчитать норму (Опрос)", callback_data="profile_recount_norm")]
+    ])
+
+    await message.answer(
+        "👤 <b>ТВОЙ ПРОФИЛЬ И НОРМА</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"🔥 Калории: <b>{user.get('calories', 2000)} ккал</b>\n"
+        f"🥩 Белки: <b>{user.get('protein', 100)} г</b>\n"
+        f"🥑 Жиры: <b>{user.get('fat', 70)} г</b>\n"
+        f"🍚 Углеводы: <b>{user.get('carbs', 200)} г</b>\n\n"
+        f"🥗 <b>Тип питания:</b> {diet_titles.get(user.get('diet'), 'Обычное')}\n"
+        f"🛡 <b>Аллергии:</b> {user.get('allergies', 'Нет')}",
+        reply_markup=kb
+    )
+
+@dp.message(F.text == "🎯 Моя норма")
+@dp.message(Command("plan"))
+async def plan_handler(message: Message, state: FSMContext):
+    await state.clear()
+    user = await get_user_profile(message.from_user.id)
+    if not user:
+        await message.answer("Сначала нажми /start.")
+        return
+    await message.answer(
+        "🎯 <b>Твоя дневная норма</b>\n━━━━━━━━━━━━━━━━━━━━\n"
+        f"🔥 {user.get('calories', 2000)} ккал\n"
+        f"🥩 Белки: {user.get('protein', 100)} г\n"
+        f"🥑 Жиры: {user.get('fat', 70)} г\n"
+        f"🍚 Углеводы: {user.get('carbs', 200)} г\n"
+        f"🛡 Аллергии: {user.get('allergies', 'Нет')}"
+    )
+
+@dp.message(F.text == "😋 Вкусняшка")
+@dp.message(Command("treat"))
+async def treat_button_handler(message: Message, state: FSMContext):
+    await state.clear()
+    if not await check_user_access(message.from_user.id):
+        await send_paywall(message)
+        return
+
+    await state.set_state(TreatStates.waiting_for_treat)
+    await message.answer(
+        "😋 <b>Съел(а) что-то вкусное?</b>\n\n"
+        "Напиши текстом или наговори голосом, что это было (например: <i>«кусочек торта Наполеон»</i>, <i>«2 дольки тёмного шоколада»</i>, <i>«маленький баунти»</i>).\n\n"
+        "<i>Я рассчитаю КБЖУ без чувства вины — баловать себя это абсолютно нормально! ✨</i>"
+    )
+
+@dp.message(F.text == "🥗 Что приготовить")
+@dp.message(Command("fridge"))
+async def fridge_handler(message: Message, state: FSMContext):
+    await state.clear()
+    if not await check_user_access(message.from_user.id):
+        await send_paywall(message)
+        return
+    await state.set_state(FoodStates.waiting_for_recipe)
+    await message.answer("Напиши продукты через запятую, и я соберу идеальный рецепт:")
+
+@dp.message(F.text == "🏋️ Тренировка")
+@dp.message(Command("workout"))
+async def workout_menu_handler(message: Message, state: FSMContext):
+    await state.clear()
+    if not await check_user_access(message.from_user.id):
+        await send_paywall(message)
+        return
+
+    user = await get_user_profile(message.from_user.id)
+    fav_workout = user.get("favorite_workout_name") if user else None
+
+    if fav_workout:
+        intro_text = (
+            f"🏋️ <b>ТРЕНИРОВКИ И АКТИВНОСТЬ</b>\n\n"
+            f"<i>Заметил(а), что ты часто выбираешь: <b>{fav_workout}</b>. "
+            f"Продолжим в том же духе или выберем что-то новое?</i>"
+        )
+    else:
+        intro_text = "🏋️ <b>ТРЕНИРОВКИ И АКТИВНОСТЬ</b>\n\nВыбери программу на сегодня или впиши свою активность:"
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🏠 Дома · Новичок 🟢", callback_data="gen_workout_home_easy")],
+        [InlineKeyboardButton(text="🏠 Дома · Продвинутый (60 мин) 🔴", callback_data="gen_workout_home_hard")],
+        [InlineKeyboardButton(text="🏋️ В зале · Новичок 🟢", callback_data="gen_workout_gym_easy")],
+        [InlineKeyboardButton(text="🏋️ В зале · Продвинутый (60 мин) 🔴", callback_data="gen_workout_gym_hard")],
+        [InlineKeyboardButton(text="👣 Своя активность или Шаги", callback_data="enter_custom_activity")]
+    ])
+    await message.answer(intro_text, reply_markup=kb)
+
+@dp.message(F.text == "💬 Спросить нутрициолога")
+@dp.message(Command("ask"))
+async def ask_nutritionist_handler(message: Message, state: FSMContext):
+    await state.clear()
+    if not await check_user_access(message.from_user.id):
+        return await send_paywall(message)
+
+    await state.set_state(AskStates.waiting_for_question)
+    text = (
+        "💬 <b>Я на связи — спрашивай что угодно про питание, тренировки и здоровье!</b>\n\n"
+        "<i>Например:</i>\n"
+        "• Почему вес встал на второй неделе?\n"
+        "• Что лучше съесть после вечерней тренировки?\n"
+        "• Чем заменить молочные продукты в рационе?\n\n"
+        "Отправь вопрос текстом или наговори голосом. Отвечу с учётом твоей нормы, аллергий и дневника."
+    )
+    await message.answer(text)
+
+@dp.message(F.text == "⚖️ Вес")
+@dp.message(Command("weight"))
+async def weight_handler(message: Message, state: FSMContext):
+    await state.clear()
+    user = await get_user_profile(message.from_user.id)
+    if not user:
+        await message.answer("Сначала пройди регистрацию: /start")
+        return
+    
+    curr_weight = user.get("weight", "—")
+    await state.set_state(WeightStates.waiting_for_weight)
+    await message.answer(
+        f"Твой текущий вес: <b>{curr_weight} кг</b>\n\n"
+        "Напиши свой новый вес в кг (например: <code>74.5</code>):"
+    )
+
+@dp.message(F.text == "❓ Помощь")
+@dp.message(Command("help"))
+async def help_handler(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("📸 Пришли фото еды — я посчитаю КБЖУ.\n🗣 Или наговори голосом!")
+
+# =========================================================
+# ОНБОРДИНГ И НАСТРОЙКИ
+# =========================================================
 @dp.callback_query(F.data == "start_onb")
 async def start_onboarding_callback(callback: CallbackQuery):
     keyboard = InlineKeyboardMarkup(
@@ -716,7 +867,52 @@ async def finish_onboarding(target_message, state: FSMContext, user_id: int, all
         await target_message.answer(text, reply_markup=main_menu)
 
 # =========================================================
-# ТРЕКЕР ВОДЫ
+# РЕДАКТИРОВАНИЕ ПРОФИЛЯ
+# =========================================================
+@dp.callback_query(F.data == "profile_edit_allergies")
+async def profile_edit_allergies_handler(callback: CallbackQuery):
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🌰 Орехи", callback_data="update_alg_nuts"), InlineKeyboardButton(text="🥛 Лактоза", callback_data="update_alg_lactose")],
+        [InlineKeyboardButton(text="🌾 Глютен", callback_data="update_alg_gluten"), InlineKeyboardButton(text="🐟 Рыба / Морепродукты", callback_data="update_alg_seafood")],
+        [InlineKeyboardButton(text="✍️ Написать текстом", callback_data="update_alg_custom")],
+        [InlineKeyboardButton(text="❌ Нет аллергий", callback_data="update_alg_none")],
+    ])
+    await callback.message.edit_text(
+        "🛡 <b>Выбери новые настройки аллергий и ограничений:</b>\n"
+        "<i>Ингредиенты сразу исключатся из рецептов.</i>",
+        reply_markup=kb
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("update_alg_"))
+async def update_allergy_callback_handler(callback: CallbackQuery, state: FSMContext):
+    alg_type = callback.data.replace("update_alg_", "")
+    
+    if alg_type == "custom":
+        await state.set_state(Onboarding.custom_allergy)
+        await callback.message.edit_text("✍️ <b>Напиши текстом, на что у тебя аллергия:</b>\n\nНапример: <i>«Арахис, мёд, цитрусовые»</i>")
+        await callback.answer()
+        return
+
+    allergies_map = {
+        "nuts": "Аллергия на орехи",
+        "lactose": "Непереносимость лактозы",
+        "gluten": "Непереносимость глютена",
+        "seafood": "Аллергия на рыбу и морепродукты",
+        "none": "Нет"
+    }
+    new_allergy = allergies_map.get(alg_type, "Нет")
+    await save_user_profile(callback.from_user.id, {"allergies": new_allergy})
+    await callback.message.edit_text(f"✅ <b>Аллергии обновлены:</b> {new_allergy}")
+    await callback.answer()
+
+@dp.callback_query(F.data == "profile_recount_norm")
+async def profile_recount_norm_handler(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await start_onboarding_callback(callback)
+
+# =========================================================
+# ТРЕКЕР ВОДЫ И ДНЕВНИК
 # =========================================================
 @dp.callback_query(F.data == "add_water_250")
 async def add_water_handler(callback: CallbackQuery):
@@ -734,24 +930,46 @@ async def add_water_handler(callback: CallbackQuery):
     else:
         await callback.answer("Ошибка БД")
 
-# =========================================================
-# ВЕС И ОТСЧЕТ ДО ЦЕЛИ
-# =========================================================
-@dp.message(F.text == "⚖️ Вес")
-@dp.message(Command("weight"))
-async def weight_handler(message: Message, state: FSMContext):
-    user = await get_user_profile(message.from_user.id)
-    if not user:
-        await message.answer("Сначала пройди регистрацию: /start")
-        return
+@dp.callback_query(F.data == "delete_last_meal")
+async def delete_last_meal_callback(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    doc_id = f"{user_id}_{today_str()}"
     
-    curr_weight = user.get("weight", "—")
-    await state.set_state(WeightStates.waiting_for_weight)
-    await message.answer(
-        f"Твой текущий вес: <b>{curr_weight} кг</b>\n\n"
-        "Напиши свой новый вес в кг (например: <code>74.5</code>):"
-    )
+    if db:
+        doc_ref = db.collection('diaries').document(doc_id)
+        doc = await asyncio.to_thread(doc_ref.get)
+        if doc.exists:
+            meals = doc.to_dict().get('meals', [])
+            if meals:
+                removed_meal = meals.pop()
+                await asyncio.to_thread(doc_ref.set, {'meals': meals}, merge=True)
+                await callback.answer(f"🗑 Удалено: {removed_meal.get('title', 'Блюдо')}")
+                await send_today(callback.message, user_id=user_id)
+                return
+    await callback.answer("В дневнике за сегодня нет записей")
 
+@dp.message(Command("delete_last"))
+async def delete_last_command(message: Message, state: FSMContext):
+    await state.clear()
+    user_id = message.from_user.id
+    doc_id = f"{user_id}_{today_str()}"
+    
+    if db:
+        doc_ref = db.collection('diaries').document(doc_id)
+        doc = await asyncio.to_thread(doc_ref.get)
+        if doc.exists:
+            meals = doc.to_dict().get('meals', [])
+            if meals:
+                removed_meal = meals.pop()
+                await asyncio.to_thread(doc_ref.set, {'meals': meals}, merge=True)
+                await message.answer(f"🗑 Удалено последнее блюдо: <b>{removed_meal.get('title', 'Блюдо')}</b>")
+                await send_today(message, user_id=user_id)
+                return
+    await message.answer("Записей за сегодня нет.")
+
+# =========================================================
+# ВЕС
+# =========================================================
 @dp.message(WeightStates.waiting_for_weight)
 async def process_weight_update(message: Message, state: FSMContext):
     numbers = re.findall(r"\d+(?:[.,]\d+)?", message.text)
@@ -809,36 +1027,8 @@ async def process_weight_update(message: Message, state: FSMContext):
     await message.answer(response_text)
 
 # =========================================================
-# УМНЫЙ ГЕНЕРАТОР ТРЕНИРОВОК С ПАМЯТЬЮ
+# ТРЕНИРОВКИ И АКТИВНОСТЬ
 # =========================================================
-@dp.message(F.text == "🏋️ Тренировка")
-@dp.message(Command("workout"))
-async def workout_menu_handler(message: Message):
-    if not await check_user_access(message.from_user.id):
-        await send_paywall(message)
-        return
-
-    user = await get_user_profile(message.from_user.id)
-    fav_workout = user.get("favorite_workout_name") if user else None
-
-    if fav_workout:
-        intro_text = (
-            f"🏋️ <b>ТРЕНИРОВКИ И АКТИВНОСТЬ</b>\n\n"
-            f"<i>Заметил(а), что ты часто выбираешь: <b>{fav_workout}</b>. "
-            f"Продолжим в том же духе или выберем что-то новое?</i>"
-        )
-    else:
-        intro_text = "🏋️ <b>ТРЕНИРОВКИ И АКТИВНОСТЬ</b>\n\nВыбери программу на сегодня или впиши свою активность:"
-
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🏠 Дома · Новичок 🟢", callback_data="gen_workout_home_easy")],
-        [InlineKeyboardButton(text="🏠 Дома · Продвинутый (60 мин) 🔴", callback_data="gen_workout_home_hard")],
-        [InlineKeyboardButton(text="🏋️ В зале · Новичок 🟢", callback_data="gen_workout_gym_easy")],
-        [InlineKeyboardButton(text="🏋️ В зале · Продвинутый (60 мин) 🔴", callback_data="gen_workout_gym_hard")],
-        [InlineKeyboardButton(text="👣 Своя активность или Шаги", callback_data="enter_custom_activity")]
-    ])
-    await message.answer(intro_text, reply_markup=kb)
-
 @dp.callback_query(F.data == "enter_custom_activity")
 async def enter_activity_callback(callback: CallbackQuery, state: FSMContext):
     await state.set_state(ActivityStates.waiting_for_activity)
@@ -1000,22 +1190,8 @@ async def done_workout_callback(callback: CallbackQuery):
     await send_today(callback.message, user_id=user_id)
 
 # =========================================================
-# ВКУСНЯШКИ С ПОДДЕРЖКОЙ
+# ВКУСНЯШКИ
 # =========================================================
-@dp.message(F.text == "😋 Вкусняшка")
-@dp.message(Command("treat"))
-async def treat_button_handler(message: Message, state: FSMContext):
-    if not await check_user_access(message.from_user.id):
-        await send_paywall(message)
-        return
-
-    await state.set_state(TreatStates.waiting_for_treat)
-    await message.answer(
-        "😋 <b>Съел(а) что-то вкусное?</b>\n\n"
-        "Напиши текстом или наговори голосом, что это было (например: <i>«кусочек торта Наполеон»</i>, <i>«2 дольки тёмного шоколада»</i>, <i>«маленький баунти»</i>).\n\n"
-        "<i>Я рассчитаю КБЖУ без чувства вины — баловать себя это абсолютно нормально! ✨</i>"
-    )
-
 @dp.message(TreatStates.waiting_for_treat)
 async def process_treat_input(message: Message, state: FSMContext):
     await state.set_state(None) 
@@ -1068,25 +1244,8 @@ async def process_treat_input(message: Message, state: FSMContext):
         await wait_msg.edit_text("Не удалось рассчитать лакомство. Попробуй описать точнее.")
 
 # =========================================================
-# AI-НУТРИЦИОЛОГ (ВОПРОС-ОТВЕТ С ПАМЯТЬЮ И АЛЛЕРГИЯМИ)
+# СПРОСИТЬ НУТРИЦИОЛОГА (СОСТОЯНИЕ)
 # =========================================================
-@dp.message(F.text == "💬 Спросить нутрициолога")
-@dp.message(Command("ask"))
-async def ask_nutritionist_handler(message: Message, state: FSMContext):
-    if not await check_user_access(message.from_user.id):
-        return await send_paywall(message)
-
-    await state.set_state(AskStates.waiting_for_question)
-    text = (
-        "💬 <b>Я на связи — спрашивай что угодно про питание, тренировки и здоровье!</b>\n\n"
-        "<i>Например:</i>\n"
-        "• Почему вес встал на второй неделе?\n"
-        "• Что лучше съесть после вечерней тренировки?\n"
-        "• Чем заменить молочные продукты в рационе?\n\n"
-        "Отправь вопрос текстом или наговори голосом. Отвечу с учётом твоей нормы, аллергий и дневника."
-    )
-    await message.answer(text)
-
 @dp.message(AskStates.waiting_for_question)
 async def process_nutritionist_question(message: Message, state: FSMContext):
     await state.set_state(None)
@@ -1118,132 +1277,35 @@ async def process_nutritionist_question(message: Message, state: FSMContext):
         await wait_msg.edit_text("Не удалось получить ответ. Попробуй переформулировать вопрос.")
 
 # =========================================================
-# УМНЫЙ ИИ-МАРШРУТИЗАТОР (ГОЛОС И ЛЮБОЙ ТЕКСТ)
+# РЕЦЕПТЫ По ингредиентам
 # =========================================================
-async def process_smart_input(text: str, message: Message, state: FSMContext, wait_msg: Message):
+@dp.message(FoodStates.waiting_for_recipe)
+async def recipe_handler(message: Message, state: FSMContext):
+    await state.clear()
+    wait_message = await message.answer("⏳ Собираю рецепт...")
+    
+    user = await get_user_profile(message.from_user.id) or {}
+    diet_pref = user.get("diet", "all")
+    allergies = user.get("allergies", "Нет")
+    
+    diet_str = {
+        "nutri": "Строгий НУТРИЦИОЛОГИЧЕСКИЙ подход: без добавленного сахара, минимизировать глютен, использовать масло гхи для жарки, много клетчатки/овощей, качественный белок.",
+        "veg": "Вегетарианское меню (без мяса).",
+        "allergy": "Гипоаллергенно (строго без лактозы и без глютена)."
+    }.get(diet_pref, "Обычное сбалансированное питание.")
+
     try:
-        # 1. ИИ определяет, что именно написал/сказал человек
-        router_prompt = (
-            f"Текст пользователя: \"{text}\".\n"
-            "Определи намерение. Ответь строго ОДНИМ СЛОВОМ:\n"
-            "ACTIVITY - если речь о тренировке, шагах, спорте.\n"
-            "FOOD - если описывается съеденная еда или блюдо (например: 'арахисовая паста 10г').\n"
-            "QUESTION - если это вопрос про здоровье, питание, вес, совет, похудение или просто общение."
+        prompt = (
+            f"Составь вкусный рецепт из продуктов: {message.text}.\n"
+            f"Предпочтения: {diet_str}\n"
+            f"КАТЕГОРИЧЕСКИЕ АЛЛЕРГИИ И НЕПЕРЕНОСИМОСТИ ПОЛЬЗОВАТЕЛЯ: \"{allergies}\". НЕ ИСПОЛЬЗУЙ ИХ И ИХ ПРОИЗВОДНЫЕ В РЕЦЕПТЕ!\n"
+            "Оформи красиво с HTML тегами (<b>, <i>). Укажи примерный КБЖУ порции."
         )
-        intent = await ask_ai(prompt=router_prompt, model=AI_MODEL)
+        result = await ask_ai(prompt=prompt, model=AI_MODEL)
+        await wait_message.edit_text(clean_html_tags(result))
+    except Exception:
+        await wait_message.edit_text("Не удалось составить рецепт.")
 
-        # 2. Обработка ТРЕНИРОВКИ
-        if "ACTIVITY" in intent:
-            user = await get_user_profile(message.from_user.id)
-            weight = user.get("weight", 70) if user else 70
-            prompt = (
-                f"Пользователь весом {weight} кг выполнил: \"{text}\".\n"
-                "Рассчитай примерный расход сожжённых калорий.\n"
-                "Верни строго JSON: {\"title\": \"название\", \"burned_kcal\": 0, \"comment\": \"похвала\"}"
-            )
-            act_data = extract_json(await ask_ai(prompt=prompt, model=AI_MODEL))
-            await state.update_data(calculated_activity=act_data)
-            
-            out_text = (
-                f"🏃 <b>Активность:</b> {clean_html_tags(str(act_data.get('title')))}\n"
-                "━━━━━━━━━━━━━━━━━━━━\n"
-                f"🔥 Расход: <b>{act_data.get('burned_kcal', 150)} ккал</b>\n\n"
-                f"💬 <i>{clean_html_tags(str(act_data.get('comment')))}</i>\n\n"
-                "Добавить активность в дневник?"
-            )
-            await wait_msg.edit_text(out_text, reply_markup=activity_result_keyboard())
-
-        # 3. Обработка ЕДЫ
-        elif "FOOD" in intent:
-            prompt = (
-                f"Пользователь съел: \"{text}\".\n"
-                "Рассчитай калории и БЖУ.\n"
-                "Верни строго JSON:\n"
-                "{\n\"title\": \"название\", \"calories\": 0, \"protein\": 0, \"fat\": 0, \"carbs\": 0, \"comment\": \"короткий комментарий без ругани\"\n}"
-            )
-            food_data = extract_json(await ask_ai(prompt=prompt, model=AI_MODEL))
-            await state.update_data(calculated_food=food_data)
-
-            out_text = (
-                f"🍽 <b>{clean_html_tags(str(food_data.get('title')))}</b>\n━━━━━━━━━━━━━━━━━━━━\n"
-                f"🔥 Калории: <b>{food_data.get('calories', 0)} ккал</b>\n"
-                f"🥩 Белки: {food_data.get('protein', 0)} г\n"
-                f"🥑 Жиры: {food_data.get('fat', 0)} г\n"
-                f"🍚 Углеводы: {food_data.get('carbs', 0)} г\n\n"
-                f"💬 <i>{clean_html_tags(str(food_data.get('comment')))}</i>\n\n"
-                "Внести приём пищи в дневник?"
-            )
-            await wait_msg.edit_text(out_text, reply_markup=result_keyboard())
-
-        # 4. Обработка ВОПРОСА НУТРИЦИОЛОГУ
-        else:
-            user = await get_user_profile(message.from_user.id) or {}
-            meals = await get_today_meals(message.from_user.id)
-            meals_summary = ", ".join([m.get("title", "") for m in meals]) or "Ещё не вносил(а)"
-
-            prompt = (
-                f"Пользователь пишет: \"{text}\".\n\n"
-                f"Контекст профиля:\n"
-                f"- Цель: {user.get('goal', 'loss')}\n"
-                f"- Вес: {user.get('weight', 70)} кг\n"
-                f"- Норма калорий: {user.get('calories', 2000)} ккал\n"
-                f"- Аллергии: {user.get('allergies', 'Нет')}\n"
-                f"- Съедено сегодня: {meals_summary}\n\n"
-                "Ответь как профессиональный, эмпатичный нутрициолог. Помоги советом. "
-                "Используй HTML теги (<b>, <i>). Без списков с решётками (###)."
-            )
-            answer = await ask_ai(prompt=prompt, model=AI_MODEL)
-            await wait_msg.edit_text(clean_html_tags(answer))
-
-    except Exception as e:
-        logger.error(f"Ошибка ИИ-маршрутизатора: {e}")
-        await wait_msg.edit_text("Не смог разобрать сообщение. Попробуй переформулировать.")
-
-
-# === ОБРАБОТЧИК ГОЛОСОВЫХ СООБЩЕНИЙ ===
-@dp.message(F.voice)
-async def voice_handler(message: Message, state: FSMContext):
-    if not await check_user_access(message.from_user.id):
-        return await send_paywall(message)
-
-    wait_msg = await message.answer("Слушаю голосовое... 🎧")
-    try:
-        voice_file = await bot.get_file(message.voice.file_id)
-        buffer = io.BytesIO()
-        await bot.download_file(voice_file.file_path, destination=buffer)
-        buffer.name = "voice.ogg"
-
-        transcript = await ai_client.audio.transcriptions.create(model="whisper-1", file=buffer)
-        text = transcript.text
-        
-        await wait_msg.edit_text(f"🗣 <b>Вы сказали:</b> «{clean_html_tags(text)}»\n\n⏳ Думаю...")
-        
-        # Направляем расшифрованный текст в умный обработчик
-        await process_smart_input(text, message, state, wait_msg)
-    except Exception as e:
-        logger.error(f"Ошибка аудио: {e}")
-        await wait_msg.edit_text("Не удалось распознать голосовое сообщение.")
-
-
-# === ОБРАБОТЧИК ЛЮБОГО ПРОСТОГО ТЕКСТА ===
-@dp.message(F.text)
-async def universal_text_handler(message: Message, state: FSMContext):
-    if not await check_user_access(message.from_user.id):
-        return await send_paywall(message)
-
-    # Игнорируем команды и системные кнопки меню
-    if message.text.startswith('/'): return
-    known_buttons = ["📊 Сегодня", "😋 Вкусняшка", "🥗 Что приготовить", "🏋️ Тренировка", "💬 Спросить нутрициолога", "⚖️ Вес", "👤 Профиль", "❓ Помощь"]
-    if message.text in known_buttons: return
-
-    # Игнорируем, если бот в данный момент ждёт ввода конкретных данных (вес, рецепт, аллергия)
-    current_state = await state.get_state()
-    if current_state in [WeightStates.waiting_for_weight.state, FoodStates.waiting_for_recipe.state, Onboarding.custom_allergy.state, FoodStates.correcting.state]:
-        return
-
-    wait_msg = await message.answer("🤔 Читаю сообщение...")
-    # Направляем текст в умный обработчик
-    await process_smart_input(message.text, message, state, wait_msg)
 # =========================================================
 # ФОТО ЕДЫ
 # =========================================================
@@ -1349,81 +1411,6 @@ async def delete_food_handler(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text("🗑 Запись отменена.")
     await callback.answer()
 
-@dp.callback_query(F.data == "delete_last_meal")
-async def delete_last_meal_callback(callback: CallbackQuery):
-    user_id = callback.from_user.id
-    doc_id = f"{user_id}_{today_str()}"
-    
-    if db:
-        doc_ref = db.collection('diaries').document(doc_id)
-        doc = await asyncio.to_thread(doc_ref.get)
-        if doc.exists:
-            meals = doc.to_dict().get('meals', [])
-            if meals:
-                removed_meal = meals.pop()
-                await asyncio.to_thread(doc_ref.set, {'meals': meals}, merge=True)
-                await callback.answer(f"🗑 Удалено: {removed_meal.get('title', 'Блюдо')}")
-                await send_today(callback.message, user_id=user_id)
-                return
-    await callback.answer("В дневнике за сегодня нет записей")
-
-@dp.message(Command("delete_last"))
-async def delete_last_command(message: Message):
-    user_id = message.from_user.id
-    doc_id = f"{user_id}_{today_str()}"
-    
-    if db:
-        doc_ref = db.collection('diaries').document(doc_id)
-        doc = await asyncio.to_thread(doc_ref.get)
-        if doc.exists:
-            meals = doc.to_dict().get('meals', [])
-            if meals:
-                removed_meal = meals.pop()
-                await asyncio.to_thread(doc_ref.set, {'meals': meals}, merge=True)
-                await message.answer(f"🗑 Удалено последнее блюдо: <b>{removed_meal.get('title', 'Блюдо')}</b>")
-                await send_today(message, user_id=user_id)
-                return
-    await message.answer("Записей за сегодня нет.")
-
-# =========================================================
-# РЕЦЕПТЫ С УЧЁТОМ НУТРИЦИОЛОГИИ И АЛЛЕРГИЙ
-# =========================================================
-@dp.message(F.text == "🥗 Что приготовить")
-@dp.message(Command("fridge"))
-async def fridge_handler(message: Message, state: FSMContext):
-    if not await check_user_access(message.from_user.id):
-        await send_paywall(message)
-        return
-    await state.set_state(FoodStates.waiting_for_recipe)
-    await message.answer("Напиши продукты через запятую, и я соберу идеальный рецепт:")
-
-@dp.message(FoodStates.waiting_for_recipe)
-async def recipe_handler(message: Message, state: FSMContext):
-    await state.clear()
-    wait_message = await message.answer("⏳ Собираю рецепт...")
-    
-    user = await get_user_profile(message.from_user.id) or {}
-    diet_pref = user.get("diet", "all")
-    allergies = user.get("allergies", "Нет")
-    
-    diet_str = {
-        "nutri": "Строгий НУТРИЦИОЛОГИЧЕСКИЙ подход: без добавленного сахара, минимизировать глютен, использовать масло гхи для жарки, много клетчатки/овощей, качественный белок.",
-        "veg": "Вегетарианское меню (без мяса).",
-        "allergy": "Гипоаллергенно (строго без лактозы и без глютена)."
-    }.get(diet_pref, "Обычное сбалансированное питание.")
-
-    try:
-        prompt = (
-            f"Составь вкусный рецепт из продуктов: {message.text}.\n"
-            f"Предпочтения: {diet_str}\n"
-            f"КАТЕГОРИЧЕСКИЕ АЛЛЕРГИИ И НЕПЕРЕНОСИМОСТИ ПОЛЬЗОВАТЕЛЯ: \"{allergies}\". НЕ ИСПОЛЬЗУЙ ИХ И ИХ ПРОИЗВОДНЫЕ В РЕЦЕПТЕ!\n"
-            "Оформи красиво с HTML тегами (<b>, <i>). Укажи примерный КБЖУ порции."
-        )
-        result = await ask_ai(prompt=prompt, model=AI_MODEL)
-        await wait_message.edit_text(clean_html_tags(result))
-    except Exception:
-        await wait_message.edit_text("Не удалось составить рецепт.")
-
 # =========================================================
 # ОПЛАТА И ТАРИФЫ
 # =========================================================
@@ -1450,117 +1437,122 @@ async def process_buy_callback(callback: CallbackQuery):
         await callback.message.edit_text("Ошибка формирования счета. Напишите в поддержку.")
 
 # =========================================================
-# КНОПКИ, КОМАНДЫ И РЕДАКТИРОВАНИЕ ПРОФИЛЯ
+# УМНЫЙ ИИ-МАРШРУТИЗАТОР (ГОЛОС И ЛЮБОЙ СВОБОДНЫЙ ТЕКСТ)
 # =========================================================
-@dp.message(F.text == "📊 Сегодня")
-@dp.message(Command("today"))
-async def today_handler(message: Message):
-    await send_today(message)
+async def process_smart_input(text: str, message: Message, state: FSMContext, wait_msg: Message):
+    try:
+        router_prompt = (
+            f"Текст пользователя: \"{text}\".\n"
+            "Определи намерение. Ответь строго ОДНИМ СЛОВОМ:\n"
+            "ACTIVITY - если речь о тренировке, шагах, спорте.\n"
+            "FOOD - если описывается съеденная еда или блюдо (например: 'арахисовая паста 10г').\n"
+            "QUESTION - если это вопрос про здоровье, питание, вес, совет, похудение или просто общение."
+        )
+        intent = await ask_ai(prompt=router_prompt, model=AI_MODEL)
 
-@dp.message(Command("reset"))
-async def reset_user_handler(message: Message, state: FSMContext):
-    await state.clear()
-    user_id = str(message.from_user.id)
-    if db:
-        await asyncio.to_thread(db.collection('users').document(user_id).delete)
-        await message.answer("🔄 <b>Ваш профиль сброшен!</b> Нажмите /start, чтобы зайти с нуля.")
-    else:
-        await message.answer("Ошибка подключения к БД.")
+        if "ACTIVITY" in intent:
+            user = await get_user_profile(message.from_user.id)
+            weight = user.get("weight", 70) if user else 70
+            prompt = (
+                f"Пользователь весом {weight} кг выполнил: \"{text}\".\n"
+                "Рассчитай примерный расход сожжённых калорий.\n"
+                "Верни строго JSON: {\"title\": \"название\", \"burned_kcal\": 0, \"comment\": \"похвала\"}"
+            )
+            act_data = extract_json(await ask_ai(prompt=prompt, model=AI_MODEL))
+            await state.update_data(calculated_activity=act_data)
+            
+            out_text = (
+                f"🏃 <b>Активность:</b> {clean_html_tags(str(act_data.get('title')))}\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                f"🔥 Расход: <b>{act_data.get('burned_kcal', 150)} ккал</b>\n\n"
+                f"💬 <i>{clean_html_tags(str(act_data.get('comment')))}</i>\n\n"
+                "Добавить активность в дневник?"
+            )
+            await wait_msg.edit_text(out_text, reply_markup=activity_result_keyboard())
 
-@dp.message(F.text == "🎯 Моя норма")
-@dp.message(Command("plan"))
-async def plan_handler(message: Message):
-    user = await get_user_profile(message.from_user.id)
-    if not user:
-        await message.answer("Сначала нажми /start.")
+        elif "FOOD" in intent:
+            prompt = (
+                f"Пользователь съел: \"{text}\".\n"
+                "Рассчитай калории и БЖУ.\n"
+                "Верни строго JSON:\n"
+                "{\n\"title\": \"название\", \"calories\": 0, \"protein\": 0, \"fat\": 0, \"carbs\": 0, \"comment\": \"короткий комментарий без ругани\"\n}"
+            )
+            food_data = extract_json(await ask_ai(prompt=prompt, model=AI_MODEL))
+            await state.update_data(calculated_food=food_data)
+
+            out_text = (
+                f"🍽 <b>{clean_html_tags(str(food_data.get('title')))}</b>\n━━━━━━━━━━━━━━━━━━━━\n"
+                f"🔥 Калории: <b>{food_data.get('calories', 0)} ккал</b>\n"
+                f"🥩 Белки: {food_data.get('protein', 0)} г\n"
+                f"🥑 Жиры: {food_data.get('fat', 0)} г\n"
+                f"🍚 Углеводы: {food_data.get('carbs', 0)} г\n\n"
+                f"💬 <i>{clean_html_tags(str(food_data.get('comment')))}</i>\n\n"
+                "Внести приём пищи в дневник?"
+            )
+            await wait_msg.edit_text(out_text, reply_markup=result_keyboard())
+
+        else:
+            user = await get_user_profile(message.from_user.id) or {}
+            meals = await get_today_meals(message.from_user.id)
+            meals_summary = ", ".join([m.get("title", "") for m in meals]) or "Ещё не вносил(а)"
+
+            prompt = (
+                f"Пользователь пишет: \"{text}\".\n\n"
+                f"Контекст профиля:\n"
+                f"- Цель: {user.get('goal', 'loss')}\n"
+                f"- Вес: {user.get('weight', 70)} кг\n"
+                f"- Норма калорий: {user.get('calories', 2000)} ккал\n"
+                f"- Аллергии: {user.get('allergies', 'Нет')}\n"
+                f"- Съедено сегодня: {meals_summary}\n\n"
+                "Ответь как профессиональный, эмпатичный нутрициолог. Помоги советом. "
+                "Используй HTML теги (<b>, <i>). Без списков с решётками (###)."
+            )
+            answer = await ask_ai(prompt=prompt, model=AI_MODEL)
+            await wait_msg.edit_text(clean_html_tags(answer))
+
+    except Exception as e:
+        logger.error(f"Ошибка ИИ-маршрутизатора: {e}")
+        await wait_msg.edit_text("Не смог разобрать сообщение. Попробуй переформулировать.")
+
+@dp.message(F.voice)
+async def voice_handler(message: Message, state: FSMContext):
+    if not await check_user_access(message.from_user.id):
+        return await send_paywall(message)
+
+    wait_msg = await message.answer("Слушаю голосовое... 🎧")
+    try:
+        voice_file = await bot.get_file(message.voice.file_id)
+        buffer = io.BytesIO()
+        await bot.download_file(voice_file.file_path, destination=buffer)
+        buffer.name = "voice.ogg"
+
+        transcript = await ai_client.audio.transcriptions.create(model="whisper-1", file=buffer)
+        text = transcript.text
+        
+        await wait_msg.edit_text(f"🗣 <b>Вы сказали:</b> «{clean_html_tags(text)}»\n\n⏳ Думаю...")
+        await process_smart_input(text, message, state, wait_msg)
+    except Exception as e:
+        logger.error(f"Ошибка аудио: {e}")
+        await wait_msg.edit_text("Не удалось распознать голосовое сообщение.")
+
+@dp.message(F.text)
+async def universal_text_handler(message: Message, state: FSMContext):
+    if not await check_user_access(message.from_user.id):
+        return await send_paywall(message)
+
+    if message.text.startswith('/'): 
         return
-    await message.answer(
-        "🎯 <b>Твоя дневная норма</b>\n━━━━━━━━━━━━━━━━━━━━\n"
-        f"🔥 {user.get('calories', 2000)} ккал\n"
-        f"🥩 Белки: {user.get('protein', 100)} г\n"
-        f"🥑 Жиры: {user.get('fat', 70)} г\n"
-        f"🍚 Углеводы: {user.get('carbs', 200)} г\n"
-        f"🛡 Аллергии: {user.get('allergies', 'Нет')}"
-    )
-
-@dp.message(F.text == "👤 Профиль")
-@dp.message(Command("profile"))
-async def profile_handler(message: Message):
-    user = await get_user_profile(message.from_user.id)
-    if not user:
-        await message.answer("Сначала нажми /start.")
+        
+    known_buttons = [
+        "📊 Сегодня", "😋 Вкусняшка", "🥗 Что приготовить", 
+        "🏋️ Тренировка", "💬 Спросить нутрициолога", "⚖️ Вес", 
+        "👤 Профиль", "🎯 Моя норма", "❓ Помощь"
+    ]
+    if message.text in known_buttons: 
         return
 
-    diet_titles = {
-        "all": "🍏 Ем всё",
-        "nutri": "🥦 Нутри-подход",
-        "veg": "🥕 Вегетарианец",
-        "allergy": "🚫 Без лактозы и глютена"
-    }
-
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🛡 Изменить аллергии", callback_data="profile_edit_allergies")],
-        [InlineKeyboardButton(text="⚙️ Пересчитать норму (Опрос)", callback_data="profile_recount_norm")]
-    ])
-
-    await message.answer(
-        "👤 <b>ТВОЙ ПРОФИЛЬ И НОРМА</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        f"🔥 Калории: <b>{user.get('calories', 2000)} ккал</b>\n"
-        f"🥩 Белки: <b>{user.get('protein', 100)} г</b>\n"
-        f"🥑 Жиры: <b>{user.get('fat', 70)} г</b>\n"
-        f"🍚 Углеводы: <b>{user.get('carbs', 200)} г</b>\n\n"
-        f"🥗 <b>Тип питания:</b> {diet_titles.get(user.get('diet'), 'Обычное')}\n"
-        f"🛡 <b>Аллергии:</b> {user.get('allergies', 'Нет')}",
-        reply_markup=kb
-    )
-
-@dp.callback_query(F.data == "profile_edit_allergies")
-async def profile_edit_allergies_handler(callback: CallbackQuery):
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🌰 Орехи", callback_data="update_alg_nuts"), InlineKeyboardButton(text="🥛 Лактоза", callback_data="update_alg_lactose")],
-        [InlineKeyboardButton(text="🌾 Глютен", callback_data="update_alg_gluten"), InlineKeyboardButton(text="🐟 Рыба / Морепродукты", callback_data="update_alg_seafood")],
-        [InlineKeyboardButton(text="✍️ Написать текстом", callback_data="update_alg_custom")],
-        [InlineKeyboardButton(text="❌ Нет аллергий", callback_data="update_alg_none")],
-    ])
-    await callback.message.edit_text(
-        "🛡 <b>Выбери новые настройки аллергий и ограничений:</b>\n"
-        "<i>Ингредиенты сразу исключатся из рецептов.</i>",
-        reply_markup=kb
-    )
-    await callback.answer()
-
-@dp.callback_query(F.data.startswith("update_alg_"))
-async def update_allergy_callback_handler(callback: CallbackQuery, state: FSMContext):
-    alg_type = callback.data.replace("update_alg_", "")
-    
-    if alg_type == "custom":
-        await state.set_state(Onboarding.custom_allergy)
-        await callback.message.edit_text("✍️ <b>Напиши текстом, на что у тебя аллергия:</b>\n\nНапример: <i>«Арахис, мёд, цитрусовые»</i>")
-        await callback.answer()
-        return
-
-    allergies_map = {
-        "nuts": "Аллергия на орехи",
-        "lactose": "Непереносимость лактозы",
-        "gluten": "Непереносимость глютена",
-        "seafood": "Аллергия на рыбу и морепродукты",
-        "none": "Нет"
-    }
-    new_allergy = allergies_map.get(alg_type, "Нет")
-    await save_user_profile(callback.from_user.id, {"allergies": new_allergy})
-    await callback.message.edit_text(f"✅ <b>Аллергии обновлены:</b> {new_allergy}")
-    await callback.answer()
-
-@dp.callback_query(F.data == "profile_recount_norm")
-async def profile_recount_norm_handler(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
-    await start_onboarding_callback(callback)
-
-@dp.message(F.text == "❓ Помощь")
-@dp.message(Command("help"))
-async def help_handler(message: Message):
-    await message.answer("📸 Пришли фото еды — я посчитаю КБЖУ.\n🗣 Или наговори голосом!")
+    wait_msg = await message.answer("🤔 Читаю сообщение...")
+    await process_smart_input(message.text, message, state, wait_msg)
 
 # =========================================================
 # УТРЕННЯЯ РАССЫЛКА
@@ -1635,7 +1627,8 @@ async def send_morning_digest():
             logger.error(f"Ошибка утренней рассылки {user_id}: {e}")
 
 @dp.message(Command("test_morning"))
-async def test_morning_handler(message: Message):
+async def test_morning_handler(message: Message, state: FSMContext):
+    await state.clear()
     await send_morning_digest()
 
 # =========================================================
