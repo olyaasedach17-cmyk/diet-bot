@@ -1066,32 +1066,66 @@ async def finish_onboarding(target_message, state: FSMContext, user_id: int, all
     data = await state.get_data()
     norm = calculate_norm(data["gender"], data["age"], data["height"], data["weight"], data["goal"], data["activity"])
     
-    trial_end = datetime.now() + timedelta(days=14)
-    target_weight = float(data.get("target_weight", data["weight"]))
+    target_weight = float(data.get("target_weight", data.get("weight", 60.0)))
     
+    # 1. Проверяем, есть ли пользователь уже в базе
+    existing_user = await get_user_profile(user_id)
+    is_new_user = existing_user is None or not existing_user.get("trial_until")
+    
+    now = datetime.now()
+    
+    # 2. Не сбрасываем триал и подписку старым пользователям!
+    if is_new_user:
+        trial_until = (now + timedelta(days=14)).isoformat()
+        premium_until = None
+        created_at = now.isoformat()
+    else:
+        trial_until = existing_user.get("trial_until")
+        premium_until = existing_user.get("premium_until")
+        created_at = existing_user.get("created_at", now.isoformat())
+
     user_data = {
-        "user_id": user_id, "gender": data["gender"], "age": data["age"], 
-        "height": data["height"], "weight": data["weight"], "goal": data["goal"], 
-        "activity": data["activity"], "diet": data.get("diet", "all"), 
-        "family_mode": data.get("family_mode", "self"), "allergies": allergy_text,
-        "calories": norm["calories"], "protein": norm["protein"], "fat": norm["fat"], "carbs": norm["carbs"],
+        "user_id": user_id, 
+        "gender": data["gender"], 
+        "age": data["age"], 
+        "height": data["height"], 
+        "weight": data["weight"], 
+        "goal": data["goal"], 
+        "activity": data["activity"], 
+        "diet": data.get("diet", "all"), 
+        "family_mode": data.get("family_mode", "self"), 
+        "allergies": allergy_text,
+        "calories": norm["calories"], 
+        "protein": norm["protein"], 
+        "fat": norm["fat"], 
+        "carbs": norm["carbs"],
         "target_weight": target_weight,
-        "trial_until": trial_end.isoformat(), "premium_until": None, "created_at": datetime.now().isoformat()
+        "trial_until": trial_until, 
+        "premium_until": premium_until, 
+        "created_at": created_at
     }
+    
     await save_user_profile(user_id, user_data)
     await state.clear()
     
+    # 3. Разный текст для новичков и для тех, кто просто обновил данные
+    if is_new_user:
+        bonus_text = "🎁 <b>Активировано 14 дней бесплатно!</b>\nТеперь пришли фото еды 📸"
+    else:
+        bonus_text = "✅ <b>Норма успешно обновлена!</b>\nВсе расчеты и дневник перестроены под новые данные 🥗"
+
     text = (
         "🎯 <b>Твоя норма рассчитана!</b>\n━━━━━━━━━━━━━━━━━━━━\n"
         f"🎯 <b>Цель:</b> достичь {target_weight} кг\n"
         f"🔥 {norm['calories']} ккал | Б {norm['protein']}г | Ж {norm['fat']}г | У {norm['carbs']}г\n"
         f"🛡 <b>Аллергии:</b> {allergy_text}\n"
         f"👨‍👩‍👧‍👦 <b>Режим семьи:</b> {'Включен' if data.get('family_mode') == 'kids' else 'Выключен'}\n\n"
-        f"🎁 <b>Активировано 14 дней бесплатно!</b>\nТеперь пришли фото еды 📸"
+        f"{bonus_text}"
     )
     if is_callback:
         await target_message.edit_text(text)
-        await target_message.answer("Готово! Жду фото.", reply_markup=main_menu)
+        if is_new_user:
+            await target_message.answer("Готово! Жду фото.", reply_markup=main_menu)
     else:
         await target_message.answer(text, reply_markup=main_menu)
 
