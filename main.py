@@ -138,18 +138,14 @@ EQUIPMENT_NAMES = {
 def clean_html_tags(text: str) -> str:
     return re.sub(r'<(?!/?(b|i|code|s|u|a)\b)[^>]*>', '', text)
 
-def make_progress_bar(current: int, target: int, unit: str = "г") -> str:
-    """Психологический трекер (Вариант 20): показывает остаток бюджета"""
+def make_progress_bar(current: int, target: int, active_char: str = "🟢", inactive_char: str = "⚪", length: int = 7) -> str:
+    """Визуальная шкала прогресса из тематических эмодзи."""
     if target <= 0:
-        return "↳ <i>Норма не задана</i>"
-    diff = target - current
-    if diff > 0:
-        text = "Осталось" if unit == "ккал" else "Нужно ещё"
-        return f"↳ <i>{text}: {diff} {unit}</i>"
-    elif diff == 0:
-        return "↳ <i>Норма ровно выполнена ✅</i>"
-    else:
-        return f"↳ <i>Перебор: {abs(diff)} {unit}</i>"
+        return inactive_char * length
+    
+    fraction = min(max(current / target, 0.0), 1.0)
+    filled = int(round(length * fraction))
+    return (active_char * filled) + (inactive_char * (length - filled))
 
 async def get_user_profile(user_id: int) -> dict | None:
     if not db: return None
@@ -389,10 +385,14 @@ async def send_today(message: Message, user_id: int | None = None):
 
     text = (
         f"📋 <b>ТВОЙ ДНЕВНИК</b>\n\n{meals_text}━━━━━━━━━━━━━━━━━━━━\n"
-        f"🔥 <b>Энергия:</b> {total_kcal} из {norm_kcal} ккал{burned_str}\n{make_progress_bar(total_kcal, norm_kcal, 'ккал')}\n\n"
-        f"🥩 <b>Белки:</b> {total_p} / {norm_p} г\n{make_progress_bar(total_p, norm_p, 'г')}\n\n"
-        f"🥑 <b>Жиры:</b> {total_f} / {norm_f} г\n{make_progress_bar(total_f, norm_f, 'г')}\n\n"
-        f"🍚 <b>Углеводы:</b> {total_c} / {norm_c} г\n{make_progress_bar(total_c, norm_c, 'г')}\n\n"
+        f"🔥 <b>Энергия:</b> {total_kcal} из {norm_kcal} ккал{burned_str}\n"
+        f"{make_progress_bar(total_kcal, norm_kcal, '⚡', '⚪')}\n\n"
+        f"🥩 <b>Белки:</b> {total_p} / {norm_p} г\n"
+        f"{make_progress_bar(total_p, norm_p, '🥩', '⚪')}\n\n"
+        f"🥑 <b>Жиры:</b> {total_f} / {norm_f} г\n"
+        f"{make_progress_bar(total_f, norm_f, '🥑', '⚪')}\n\n"
+        f"🍚 <b>Углеводы:</b> {total_c} / {norm_c} г\n"
+        f"{make_progress_bar(total_c, norm_c, '🍚', '⚪')}\n\n"
         f"💧 <b>Вода:</b> {water_ml} мл\n━━━━━━━━━━━━━━━━━━━━\n{status_text}"
     )
     
