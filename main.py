@@ -588,6 +588,7 @@ async def profile_handler(message: Message, state: FSMContext):
     fam_str = "👨‍👩‍👧‍👦 Готовлю для семьи (без скрытого сахара)" if user.get('family_mode') == 'kids' else "🧍 Только для себя"
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="👨‍👩‍👧‍👦 Режим семьи: изменить", callback_data="toggle_family_mode")],
         [InlineKeyboardButton(text="🛡 Изменить аллергии", callback_data="profile_edit_allergies")],
         [InlineKeyboardButton(text="⚙️ Пересчитать норму (Опрос)", callback_data="profile_recount_norm")]
     ])
@@ -604,6 +605,23 @@ async def profile_handler(message: Message, state: FSMContext):
         f"🛡 <b>Аллергии:</b> {user.get('allergies', 'Нет')}",
         reply_markup=kb
     )
+
+# Обработчик переключения семейного режима
+@dp.callback_query(F.data == "toggle_family_mode")
+async def toggle_family_mode_handler(callback: CallbackQuery):
+    user = await get_user_profile(callback.from_user.id)
+    if not user:
+        return await callback.answer("Профиль не найден")
+        
+    current_mode = user.get("family_mode", "self")
+    new_mode = "kids" if current_mode == "self" else "self"
+    
+    await save_user_profile(callback.from_user.id, {"family_mode": new_mode})
+    
+    mode_text = "ВКЛЮЧЕН 👨‍👩‍👧‍👦\n\nТеперь в рецептах и советах я буду убирать скрытый сахар и предлагать форматы блюд, которые понравятся детям!" if new_mode == "kids" else "ВЫКЛЮЧЕН 🧍\n\nТеперь меню рассчитывается только для тебя."
+    
+    await callback.message.edit_text(f"✅ <b>Режим семьи {mode_text}</b>")
+    await callback.answer()
 
 @dp.message(F.text == "🎯 Моя норма")
 @dp.message(Command("plan"))
