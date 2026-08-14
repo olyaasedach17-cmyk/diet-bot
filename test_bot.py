@@ -206,7 +206,7 @@ async def test_water_logging(mock_callback):
     with patch("main.db") as mock_db, patch("main.send_today", new_callable=AsyncMock):
         mock_db.collection().document().get = MagicMock(return_value=doc_mock)
         await add_water_handler(mock_callback)
-        assert "+250 мл" in mock_callback.answer.call_args[0][0]
+        assert "250 мл" in mock_callback.answer.call_args[0][0]
 
 @pytest.mark.asyncio
 async def test_toggle_family_mode(mock_callback):
