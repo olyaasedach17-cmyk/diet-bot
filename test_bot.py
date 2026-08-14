@@ -38,7 +38,6 @@ from main import (
 # =========================================================
 # БЛОК 1: МАТРИЧНОЕ ТЕСТИРОВАНИЕ ФОРМУЛ (240 ТЕСТОВ)
 # =========================================================
-# Генерируем полную сетку комбинаций для проверки всех типов людей
 GENDERS = ["M", "F"]
 AGES = [18, 25, 35, 45, 60]
 HEIGHTS = [155, 165, 175, 185]
@@ -46,22 +45,14 @@ WEIGHTS = [45.0, 60.0, 75.0, 95.0, 120.0, 140.0]
 GOALS = ["loss", "maintain", "gain"]
 ACTIVITIES = ["low", "light", "medium", "high"]
 
-# Выбираем репрезентативную выборку из 240 комбинаций
 NORM_MATRIX = list(itertools.islice(itertools.product(GENDERS, AGES, HEIGHTS, WEIGHTS, GOALS, ACTIVITIES), 240))
 
 @pytest.mark.parametrize("gender,age,height,weight,goal,activity", NORM_MATRIX)
 def test_matrix_norm_calculations(gender, age, height, weight, goal, activity):
-    """Матричная проверка: безопасность BMR, баланс макронутриентов и отсутствие сбоев."""
     norm = calculate_norm(gender, age, height, weight, goal, activity)
-    
-    # 1. Защита от опасного дефицита (не ниже 1200 ккал)
     assert norm["calories"] >= 1200, f"Опасно низкие калории: {norm['calories']}"
-    
-    # 2. Математический баланс калорий и БЖУ (4*Б + 9*Ж + 4*У)
     calc_sum = (norm["protein"] * 4) + (norm["fat"] * 9) + (norm["carbs"] * 4)
     assert abs(norm["calories"] - calc_sum) <= 20, "Дисбаланс суммы БЖУ!"
-    
-    # 3. Положительные макросы
     assert norm["protein"] > 0
     assert norm["fat"] > 0
     assert norm["carbs"] > 0
@@ -81,7 +72,7 @@ JSON_AI_VARIATIONS = [
     ('{"title": "", "protein": 10, "fat": 5, "carbs": 10}', "Приём пищи", 10, 5, 10),
     ('```JSON {"title": "Рыба на пару", "protein": 22, "fat": 6, "carbs": 0} ```', "Рыба на пару", 22, 6, 0),
     ('{"title": "Смузи", "protein": 3, "fat": 1, "carbs": 28, "comment": "Отлично"}', "Смузи", 3, 1, 28)
-] * 5  # Умножаем набор на вариации для проверки стабильности парсера
+] * 5
 
 @pytest.mark.parametrize("ai_raw,expected_title,p,f,c", JSON_AI_VARIATIONS)
 def test_extract_json_resilience_matrix(ai_raw, expected_title, p, f, c):
@@ -128,7 +119,7 @@ def test_progress_bar_display(curr, target, expected):
 
 
 # =========================================================
-# БЛОК 4: ИНТЕГРАЦИОННЫЕ ТЕСТЫ СЦЕНАРИЕВ TELEGRAM (15 ТЕСТОВ)
+# БЛОК 4: ИНТЕГРАЦИОННЫЕ ТЕСТЫ TELEGRAM
 # =========================================================
 @pytest.fixture
 def mock_message():
@@ -137,6 +128,7 @@ def mock_message():
     msg.chat = Chat(id=123456789, type="private")
     msg.answer = AsyncMock()
     msg.edit_text = AsyncMock()
+    msg.edit_reply_markup = AsyncMock()
     return msg
 
 @pytest.fixture
@@ -171,7 +163,7 @@ async def test_start_flow_existing_user(mock_message, mock_state):
 async def test_today_empty_diary(mock_message, mock_state):
     with patch("main.get_user_profile", new_callable=AsyncMock) as mock_p, \
          patch("main.get_today_meals", new_callable=AsyncMock) as mock_m, \
-         patch("main.db"):
+         patch("main.db", None):  # Корректная изоляция от базы для теста
         mock_p.return_value = {"calories": 1800, "protein": 120, "fat": 60, "carbs": 180}
         mock_m.return_value = []
         await today_handler(mock_message, mock_state)
@@ -199,13 +191,20 @@ async def test_treat_flow(mock_message, mock_state):
 @pytest.mark.asyncio
 async def test_remember_favorite_food(mock_callback, mock_state):
     await mock_state.update_data(calculated_food={"title": "Сырники", "calories": 300, "protein": 20, "fat": 10, "carbs": 25})
-    with patch("main.db"):
+    doc_mock = MagicMock()
+    doc_mock.exists = False
+    with patch("main.db") as mock_db:
+        mock_db.collection().document().get = MagicMock(return_value=doc_mock)
         await food_remember_handler(mock_callback, mock_state)
         assert "сохранено в твою базу" in mock_callback.answer.call_args[0][0]
 
 @pytest.mark.asyncio
 async def test_water_logging(mock_callback):
-    with patch("main.db"), patch("main.send_today", new_callable=AsyncMock):
+    doc_mock = MagicMock()
+    doc_mock.exists = True
+    doc_mock.to_dict.return_value = {"water": 100}
+    with patch("main.db") as mock_db, patch("main.send_today", new_callable=AsyncMock):
+        mock_db.collection().document().get = MagicMock(return_value=doc_mock)
         await add_water_handler(mock_callback)
         assert "+250 мл" in mock_callback.answer.call_args[0][0]
 
@@ -220,9 +219,9 @@ async def test_toggle_family_mode(mock_callback):
 @pytest.mark.asyncio
 async def test_admin_broadcast(mock_message):
     mock_message.text = "/admin_broadcast Внимание! Тест рассылки!"
+    doc_mock = MagicMock()
+    doc_mock.id = "123456789"
     with patch("main.db") as mock_db, patch("main.bot.send_message", new_callable=AsyncMock):
-        doc_mock = MagicMock()
-        doc_mock.id = "123456789"
         mock_db.collection().get = MagicMock(return_value=[doc_mock])
         await admin_broadcast_handler(mock_message)
         assert "Рассылка завершена" in mock_message.answer.call_args[0][0]
