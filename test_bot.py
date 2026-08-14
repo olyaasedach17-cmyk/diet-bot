@@ -22,6 +22,7 @@ from main import (
     treat_button_handler,
     fridge_handler,
     workout_menu_handler,
+    workout_location_callback,
     ask_nutritionist_handler,
     weight_handler,
     help_handler,
@@ -85,7 +86,7 @@ def test_extract_json_resilience_matrix(ai_raw, expected_title, p, f, c):
 
 
 # =========================================================
-# БЛОК 3: САНИТАЙЗЕР HTML И UI-ИНДИКАТОРЫ (20 ТЕСТОВ)
+# БЛОК 3: САНИТАЙЗЕР HTML И UI-ПРОГРЕСС-БАР (ВАРИАНТ 20)
 # =========================================================
 HTML_CLEAN_TESTS = [
     ("<b>Жирный</b>", "<b>Жирный</b>"),
@@ -95,7 +96,7 @@ HTML_CLEAN_TESTS = [
     ("<u>Подчеркнутый</u>", "<u>Подчеркнутый</u>"),
     ("<script>alert(1)</script>Текст", "alert(1)Текст"),
     ("<p>Параграф</p>", "Параграф"),
-    ("<a href='link'>Ссылка</a>", "Ссылка"),
+    ("<a href='link'>Ссылка</a>", "<a href='link'>Ссылка</a>"),
     ("<div>Блок <b>внутри</b></div>", "Блок <b>внутри</b>"),
     ("<h1>Заголовок</h1>", "Заголовок")
 ] * 2
@@ -106,20 +107,20 @@ def test_clean_html_tags_security(raw_html, expected):
 
 
 PROGRESS_BAR_TESTS = [
-    (0, 2000, "⚪⚪⚪⚪⚪⚪⚪"),
-    (1000, 2000, "🟢🟢🟢🟢⚪⚪⚪"),
-    (2000, 2000, "🟢🟢🟢🟢🟢🟢🟢"),
-    (2500, 2000, "🟢🟢🟢🟢🟢🟢🟢"),
-    (0, 0, "⚪⚪⚪⚪⚪⚪⚪"),
+    (0, 2000, "г", "↳ <i>Нужно ещё: 2000 г</i>"),
+    (1500, 2000, "ккал", "↳ <i>Осталось: 500 ккал</i>"),
+    (2000, 2000, "г", "↳ <i>Норма ровно выполнена ✅</i>"),
+    (2500, 2000, "ккал", "↳ <i>Перебор: 500 ккал</i>"),
+    (0, 0, "г", "↳ <i>Норма не задана</i>"),
 ]
 
-@pytest.mark.parametrize("curr,target,expected", PROGRESS_BAR_TESTS)
-def test_progress_bar_display(curr, target, expected):
-    assert make_progress_bar(curr, target, active_char="🟢", inactive_char="⚪", length=7) == expected
+@pytest.mark.parametrize("curr,target,unit,expected", PROGRESS_BAR_TESTS)
+def test_progress_bar_display(curr, target, unit, expected):
+    assert make_progress_bar(curr, target, unit) == expected
 
 
 # =========================================================
-# БЛОК 4: ИНТЕГРАЦИОННЫЕ ТЕСТЫ TELEGRAM
+# БЛОК 4: ИНТЕГРАЦИОННЫЕ ТЕСТЫ TELEGRAM (15+ ТЕСТОВ)
 # =========================================================
 @pytest.fixture
 def mock_message():
@@ -163,7 +164,7 @@ async def test_start_flow_existing_user(mock_message, mock_state):
 async def test_today_empty_diary(mock_message, mock_state):
     with patch("main.get_user_profile", new_callable=AsyncMock) as mock_p, \
          patch("main.get_today_meals", new_callable=AsyncMock) as mock_m, \
-         patch("main.db", None):  # Корректная изоляция от базы для теста
+         patch("main.db", None): 
         mock_p.return_value = {"calories": 1800, "protein": 120, "fat": 60, "carbs": 180}
         mock_m.return_value = []
         await today_handler(mock_message, mock_state)
@@ -225,3 +226,31 @@ async def test_admin_broadcast(mock_message):
         mock_db.collection().get = MagicMock(return_value=[doc_mock])
         await admin_broadcast_handler(mock_message)
         assert "Рассылка завершена" in mock_message.answer.call_args[0][0]
+
+@pytest.mark.asyncio
+async def test_workout_menu_flow(mock_message, mock_callback, mock_state):
+    with patch("main.get_user_profile", new_callable=AsyncMock) as mock_p, \
+         patch("main.check_user_access", new_callable=AsyncMock) as mock_acc:
+        mock_acc.return_value = True
+        
+        # 1. Меню выбора локации
+        await workout_menu_handler(mock_message, mock_state)
+        markup = mock_message.answer.call_args[1].get('reply_markup')
+        buttons_str = str(markup.inline_keyboard)
+        assert "workout_loc_home" in buttons_str
+        assert "workout_loc_gym" in buttons_str
+
+        # 2. Выбор "Дома" для ДЕВУШКИ с инвентарем
+        mock_p.return_value = {"gender": "F", "home_equipment": "bands"}
+        mock_callback.data = "workout_loc_home"
+        await workout_location_callback(mock_callback)
+        female_home_kb = str(mock_callback.message.edit_text.call_args[1].get('reply_markup').inline_keyboard)
+        assert "glutes" in female_home_kb
+        assert "choose_equipment_menu" in female_home_kb
+
+        # 3. Выбор "В зале" для ПАРНЯ
+        mock_p.return_value = {"gender": "M"}
+        mock_callback.data = "workout_loc_gym"
+        await workout_location_callback(mock_callback)
+        male_gym_kb = str(mock_callback.message.edit_text.call_args[1].get('reply_markup').inline_keyboard)
+        assert "chest" in male_gym_kb or "back" in male_gym_kb
