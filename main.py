@@ -6,7 +6,7 @@ import logging
 import os
 import re
 import random
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import aiohttp
 from aiohttp import web
@@ -17,6 +17,7 @@ from aiogram.enums import ParseMode
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
     BotCommand,
     CallbackQuery,
@@ -32,7 +33,7 @@ from firebase_admin import credentials, firestore
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # =========================================================
-# НАСТРОЙКИ И ЛОГИ
+# НАСТРОЙКИ, ЛОГИ И ЧАСОВОЙ ПОЯС (UTC+3 МИНСК / МОСКВА)
 # =========================================================
 load_dotenv()
 
@@ -41,6 +42,14 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+LOCAL_TZ = timezone(timedelta(hours=3))
+
+def now_local() -> datetime:
+    return datetime.now(LOCAL_TZ)
+
+def today_str() -> str:
+    return now_local().strftime("%Y-%m-%d")
 
 BOT_TOKEN = os.getenv("BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN")
 AI_API_KEY = os.getenv("AI_API_KEY") or os.getenv("POLZA_API_KEY")
@@ -59,7 +68,7 @@ if not AI_BASE_URL: raise RuntimeError("Не найден AI_BASE_URL")
 # =========================================================
 # FIREBASE ИНИЦИАЛИЗАЦИЯ
 # =========================================================
-firebase_json_str = os.getenv("FIREBASE_JSON")
+firebase_json_str = os.getenv("FIREBASE_JSON") or os.getenv("FIREBASE_CREDENTIALS")
 if firebase_json_str:
     try:
         creds_dict = json.loads(firebase_json_str)
@@ -81,7 +90,7 @@ else:
 ai_client = AsyncOpenAI(api_key=AI_API_KEY, base_url=AI_BASE_URL.rstrip("/"), timeout=90, max_retries=2)
 
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-dp = Dispatcher()
+dp = Dispatcher(storage=MemoryStorage())
 
 main_menu = ReplyKeyboardMarkup(
     keyboard=[
@@ -116,21 +125,31 @@ NUTRITION_TIPS = [
     "💡 <b>Совет дня:</b> Качественный белок в каждом приёме пищи защищает от резких скачков сахара и вечерних срывов на сладкое."
 ]
 
+EQUIPMENT_NAMES = {
+    "bodyweight": "🧘 Собственный вес (без инвентаря)",
+    "bands": "🎗 Фитнес-резинки",
+    "dumbbells": "🏋️ Гантели / Гиря",
+    "all": "🌟 Полный набор (гантели + резинки)"
+}
+
 # =========================================================
-# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ (РЕДИЗАЙН APPLE RINGS)
+# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ И ПРОГРЕСС-БАР (ВАРИАНТ 20)
 # =========================================================
 def clean_html_tags(text: str) -> str:
-    return re.sub(r'<(?!/?(b|i|code|s|u)\b)[^>]*>', '', text)
+    return re.sub(r'<(?!/?(b|i|code|s|u|a)\b)[^>]*>', '', text)
 
-def today_str() -> str:
-    return datetime.now().strftime("%Y-%m-%d")
-
-def make_progress_bar(current: int, target: int, active_char="🟢", inactive_char="⚪", length: int = 7) -> str:
-    """Генерирует стильный прогресс-бар из эмодзи-кружочков."""
-    if target <= 0: return inactive_char * length
-    fraction = min(max(current / target, 0.0), 1.0)
-    filled = int(round(length * fraction))
-    return (active_char * filled) + (inactive_char * (length - filled))
+def make_progress_bar(current: int, target: int, unit: str = "г") -> str:
+    """Психологический трекер (Вариант 20): показывает остаток бюджета"""
+    if target <= 0:
+        return "↳ <i>Норма не задана</i>"
+    diff = target - current
+    if diff > 0:
+        text = "Осталось" if unit == "ккал" else "Нужно ещё"
+        return f"↳ <i>{text}: {diff} {unit}</i>"
+    elif diff == 0:
+        return "↳ <i>Норма ровно выполнена ✅</i>"
+    else:
+        return f"↳ <i>Перебор: {abs(diff)} {unit}</i>"
 
 async def get_user_profile(user_id: int) -> dict | None:
     if not db: return None
@@ -145,6 +164,7 @@ async def get_user_profile(user_id: int) -> dict | None:
     data['diet'] = data.get('diet', 'all')
     data['allergies'] = data.get('allergies', 'Нет')
     data['family_mode'] = data.get('family_mode', 'self')
+    data['home_equipment'] = data.get('home_equipment', 'bodyweight')
     data['target_weight'] = float(data.get('target_weight', data.get('weight', 60.0)))
     return data
 
@@ -154,11 +174,11 @@ async def save_user_profile(user_id: int, data: dict):
 async def check_user_access(user_id: int) -> bool:
     user = await get_user_profile(user_id)
     if not user: return False
-    now = datetime.now()
+    now = now_local()
     
     try:
         if user.get("premium_until") and now < datetime.fromisoformat(user.get("premium_until")): return True
-    except: pass
+    except Exception: pass
 
     trial_str = user.get("trial_until")
     if not trial_str:
@@ -167,13 +187,13 @@ async def check_user_access(user_id: int) -> bool:
         
     try:
         if now < datetime.fromisoformat(trial_str): return True
-    except: pass
+    except Exception: pass
     return False
 
 async def send_paywall(message: Message):
     text = (
-        "🔒 <b>Твой бесплатный период (14 дней) завершился.</b>\n\n"
-        "Чтобы продолжить считать КБЖУ по фото, генерировать тренировки и вести дневник, выбери подписку:"
+        "🔒 <b>Твой бесплатный период завершился.</b>\n\n"
+        "Чтобы продолжить считать КБЖУ по фото, пользоваться рецептами и вести дневник, выбери подписку:"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="1 месяц — 15 BYN", callback_data="buy_1_month")],
@@ -182,11 +202,11 @@ async def send_paywall(message: Message):
     ])
     await message.answer(text, reply_markup=kb)
 
-async def set_bot_description(bot: Bot):
-    try: await bot.set_my_description("NutriAi — твой нутрициолог в кармане.")
-    except: pass
+async def set_bot_description(bot_instance: Bot):
+    try: await bot_instance.set_my_description("NutriAi — твой нутрициолог в кармане.")
+    except Exception: pass
 
-async def set_bot_commands(bot: Bot):
+async def set_bot_commands(bot_instance: Bot):
     commands = [
         BotCommand(command="today", description="📊 Дневник за сегодня"),
         BotCommand(command="treat", description="😋 Вкусняшка"),
@@ -196,9 +216,10 @@ async def set_bot_commands(bot: Bot):
         BotCommand(command="weight", description="⚖️ Динамика веса"),
         BotCommand(command="profile", description="👤 Профиль"),
         BotCommand(command="plan", description="🎯 Моя норма"),
+        BotCommand(command="help", description="❓ Помощь"),
     ]
-    try: await bot.set_my_commands(commands)
-    except: pass
+    try: await bot_instance.set_my_commands(commands)
+    except Exception: pass
 
 async def get_today_meals(user_id: int) -> list:
     if not db: return []
@@ -214,7 +235,7 @@ async def add_meal_to_today(user_id: int, meal_data: dict):
     await asyncio.to_thread(doc_ref.set, {'meals': meals}, merge=True)
 
 # =========================================================
-# ЖЕЛЕЗОБЕТОННАЯ МАТЕМАТИКА
+# РАСЧЁТЫ И ИИ
 # =========================================================
 def calculate_norm(gender: str, age: int, height: float, weight: float, goal: str, activity: str) -> dict:
     bmr = 10 * weight + 6.25 * height - 5 * age + (5 if gender == "M" else -161)
@@ -246,7 +267,7 @@ def extract_json(text: str) -> dict:
     
     try:
         p, f, c = max(0, float(data.get("protein") or 0)), max(0, float(data.get("fat") or 0)), max(0, float(data.get("carbs") or 0))
-    except: p, f, c = 0.0, 0.0, 0.0
+    except Exception: p, f, c = 0.0, 0.0, 0.0
     
     data["protein"], data["fat"], data["carbs"] = int(p), int(f), int(c)
     data["calories"] = int((p * 4) + (f * 9) + (c * 4))
@@ -256,7 +277,7 @@ def extract_json(text: str) -> dict:
 async def ask_ai(prompt: str, image_base64: str | None = None, model: str | None = None) -> str:
     used_model = model or AI_MODEL
     sys = (
-        "Ты эмпатичный нутрициолог. Твой подход — забота и поддержка. НИКОГДА не ругай за срывы. "
+        "Ты эмпатичный нутрициолог NutriAi. Твой подход — забота и поддержка. НИКОГДА не ругай за срывы. "
         "Отвечай кратко, красиво. Используй ТОЛЬКО разрешённые HTML теги Telegram (<b>, <i>, <code>). "
         "КРИТИЧЕСКИ ВАЖНО: ЗАПРЕЩЕНО использовать таблицы Markdown (|) и заголовки Markdown (###)."
     )
@@ -280,14 +301,14 @@ async def create_bepaid_bill(user_id: int, amount_byn: float, months: int) -> st
         "request": {
             "amount": int(amount_byn * 100), "currency": "BYN", "description": f"Подписка NutriAi на {months} мес.",
             "notification_url": "https://diet-bot-zqpn.onrender.com/webhook/bepaid",
-            "tracking_id": f"sub_{user_id}_{months}_{int(datetime.now().timestamp())}",
+            "tracking_id": f"sub_{user_id}_{months}_{int(now_local().timestamp())}",
         }
     }
     try:
         async with aiohttp.ClientSession() as s:
             async with s.post("https://checkout.bepaid.by/v2/redirect_biller/bills", json=payload, auth=aiohttp.BasicAuth(BEPAID_SHOP_ID, BEPAID_SECRET_KEY)) as r:
                 if r.status in (200, 201): return (await r.json()).get("checkout", {}).get("redirect_url")
-    except: pass
+    except Exception: pass
     return None
 
 def food_keyboard() -> InlineKeyboardMarkup:
@@ -308,8 +329,17 @@ def activity_result_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="❌ Отмена", callback_data="food_delete")]
     ])
 
+def get_workout_location_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🏠 Дома", callback_data="workout_loc_home"),
+            InlineKeyboardButton(text="🏋️ В зале", callback_data="workout_loc_gym")
+        ],
+        [InlineKeyboardButton(text="👣 Своя активность / Шаги", callback_data="enter_custom_activity")]
+    ])
+
 # =========================================================
-# ВЫВОД ДНЕВНИКА (НОВЫЙ ПРЕМИУМ ДИЗАЙН)
+# ВЫВОД ДНЕВНИКА (ТОЧНОЕ ВРЕМЯ UTC+3 + ВАРИАНТ 20)
 # =========================================================
 async def send_today(message: Message, user_id: int | None = None):
     target_id = user_id or message.from_user.id
@@ -326,8 +356,14 @@ async def send_today(message: Message, user_id: int | None = None):
     water_ml, burned_kcal = doc_data.get('water', 0), doc_data.get('burned_kcal', 0)
 
     total_kcal = sum(m.get('calories', 0) for m in meals)
-    total_p, total_f, total_c = sum(m.get('protein', 0) for m in meals), sum(m.get('fat', 0) for m in meals), sum(m.get('carbs', 0) for m in meals)
-    norm_kcal, norm_p, norm_f, norm_c = user.get('calories', 2000), user.get('protein', 100), user.get('fat', 70), user.get('carbs', 200)
+    total_p = sum(m.get('protein', 0) for m in meals)
+    total_f = sum(m.get('fat', 0) for m in meals)
+    total_c = sum(m.get('carbs', 0) for m in meals)
+    
+    norm_kcal = user.get('calories', 2000)
+    norm_p = user.get('protein', 100)
+    norm_f = user.get('fat', 70)
+    norm_c = user.get('carbs', 200)
     
     if not meals:
         meals_text = "<i>Пока пусто. Пришли фото еды — я всё посчитаю 📸</i>\n\n"
@@ -337,22 +373,26 @@ async def send_today(message: Message, user_id: int | None = None):
             title_clean = clean_html_tags(str(meal.get('title', 'Блюдо')))
             time_str = "🍽"
             try: 
-                if 'created_at' in meal: time_str = f"⏰ {datetime.fromisoformat(meal['created_at']).strftime('%H:%M')}"
-            except: pass
-            meals_text += f"{time_str} | <b>{title_clean}</b>\n↳ {meal.get('calories', 0)} ккал • Б:{meal.get('protein', 0)} Ж:{meal.get('fat', 0)} У:{meal.get('carbs', 0)}\n\n"
+                if 'created_at' in meal:
+                    dt = datetime.fromisoformat(meal['created_at'])
+                    time_str = f"⏰ {dt.strftime('%H:%M')}"
+            except Exception: pass
+            meals_text += f"{time_str} | <b>{title_clean}</b>\n   {meal.get('calories', 0)} ккал • Б:{meal.get('protein', 0)} Ж:{meal.get('fat', 0)} У:{meal.get('carbs', 0)}\n\n"
         
     net_kcal = total_kcal - burned_kcal
-    if net_kcal > norm_kcal: status_text = f"⚠️ <b>Превышение:</b> +{net_kcal - norm_kcal} ккал\n<i>Один день профицита не страшен! Завтра возвращаемся к норме 💪</i>"
-    else: status_text = f"✅ <b>Остаток на день:</b> {norm_kcal - net_kcal} ккал"
+    if net_kcal > norm_kcal: 
+        status_text = f"⚠️ <b>Превышение:</b> +{net_kcal - norm_kcal} ккал\n<i>Один день профицита не страшен! Завтра возвращаемся к норме 💪</i>"
+    else: 
+        status_text = f"✅ <b>Остаток на день:</b> {norm_kcal - net_kcal} ккал"
 
-    burned_str = f" <i>(сожжено {burned_kcal} ккал)</i>" if burned_kcal > 0 else ""
+    burned_str = f" <i>(-{burned_kcal} ккал активностью)</i>" if burned_kcal > 0 else ""
 
     text = (
         f"📋 <b>ТВОЙ ДНЕВНИК</b>\n\n{meals_text}━━━━━━━━━━━━━━━━━━━━\n"
-        f"🔥 <b>Энергия:</b> {total_kcal} из {norm_kcal} {burned_str}\n{make_progress_bar(total_kcal, norm_kcal, '🟠', '⚪')}\n\n"
-        f"🥩 <b>Белки:</b> {total_p} / {norm_p} г\n{make_progress_bar(total_p, norm_p, '🔴', '⚪')}\n\n"
-        f"🥑 <b>Жиры:</b> {total_f} / {norm_f} г\n{make_progress_bar(total_f, norm_f, '🟡', '⚪')}\n\n"
-        f"🍚 <b>Углеводы:</b> {total_c} / {norm_c} г\n{make_progress_bar(total_c, norm_c, '🟢', '⚪')}\n\n"
+        f"🔥 <b>Энергия:</b> {total_kcal} из {norm_kcal} ккал{burned_str}\n{make_progress_bar(total_kcal, norm_kcal, 'ккал')}\n\n"
+        f"🥩 <b>Белки:</b> {total_p} / {norm_p} г\n{make_progress_bar(total_p, norm_p, 'г')}\n\n"
+        f"🥑 <b>Жиры:</b> {total_f} / {norm_f} г\n{make_progress_bar(total_f, norm_f, 'г')}\n\n"
+        f"🍚 <b>Углеводы:</b> {total_c} / {norm_c} г\n{make_progress_bar(total_c, norm_c, 'г')}\n\n"
         f"💧 <b>Вода:</b> {water_ml} мл\n━━━━━━━━━━━━━━━━━━━━\n{status_text}"
     )
     
@@ -378,8 +418,8 @@ async def admin_broadcast_handler(message: Message):
         try:
             await bot.send_message(chat_id=int(doc.id), text=text)
             count += 1
-            await asyncio.sleep(0.1)
-        except: pass
+            await asyncio.sleep(0.05)
+        except Exception: pass
     await message.answer(f"✅ Рассылка завершена! Отправлено: {count} чел.")
 
 @dp.message(CommandStart())
@@ -400,6 +440,7 @@ async def start_handler(message: Message, state: FSMContext):
 @dp.message(Command("today"))
 async def today_handler(message: Message, state: FSMContext):
     await state.clear()
+    if not await check_user_access(message.from_user.id): return await send_paywall(message)
     await send_today(message)
 
 @dp.message(F.text == "👤 Профиль")
@@ -410,7 +451,8 @@ async def profile_handler(message: Message, state: FSMContext):
     if not user: return await message.answer("Сначала нажми /start.")
 
     diet_titles = {"all": "🍏 Ем всё", "nutri": "🥦 Нутри-подход", "veg": "🥕 Вегетарианец", "allergy": "🚫 Без лактозы и глютена"}
-    fam_str = "👨‍👩‍👧‍👦 Готовлю для семьи (без скрытого сахара)" if user.get('family_mode') == 'kids' else "🧍 Только для себя"
+    fam_str = "👨‍👩‍👧‍👦 Готовлю для семьи (без сахара)" if user.get('family_mode') == 'kids' else "🧍 Только для себя"
+    equip_str = EQUIPMENT_NAMES.get(user.get("home_equipment", "bodyweight"), "Свой вес")
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="👨‍👩‍👧‍👦 Режим семьи: изменить", callback_data="toggle_family_mode")],
@@ -422,6 +464,7 @@ async def profile_handler(message: Message, state: FSMContext):
         "👤 <b>ТВОЙ ПРОФИЛЬ</b>\n━━━━━━━━━━━━━━━━━━━━\n"
         f"🎯 Целевой вес: <b>{user.get('target_weight', '—')} кг</b>\n"
         f"🥗 Питание: {diet_titles.get(user.get('diet'), 'Обычное')}\n"
+        f"📦 Домашний инвентарь: <b>{equip_str}</b>\n"
         f"👶 Режим: {fam_str}\n🛡 Аллергии: {user.get('allergies', 'Нет')}",
         reply_markup=kb
     )
@@ -450,11 +493,11 @@ async def plan_handler(message: Message, state: FSMContext):
     if goal == "loss" and weight > target:
         goal_text = "📉 Снижение веса"
         weeks = (weight - target) / 0.6
-        date_str = f"🗓 <b>Прогноз цели:</b> к {(datetime.now() + timedelta(weeks=weeks)).strftime('%d.%m.%Y')} (~{int(weeks)} нед.)\n"
+        date_str = f"🗓 <b>Прогноз цели:</b> к {(now_local() + timedelta(weeks=weeks)).strftime('%d.%m.%Y')} (~{int(weeks)} нед.)\n"
     elif goal == "gain" and target > weight:
         goal_text = "📈 Набор массы"
         weeks = (target - weight) / 0.4
-        date_str = f"🗓 <b>Прогноз цели:</b> к {(datetime.now() + timedelta(weeks=weeks)).strftime('%d.%m.%Y')} (~{int(weeks)} нед.)\n"
+        date_str = f"🗓 <b>Прогноз цели:</b> к {(now_local() + timedelta(weeks=weeks)).strftime('%d.%m.%Y')} (~{int(weeks)} нед.)\n"
 
     await message.answer(
         "🎯 <b>ТВОЯ ДНЕВНАЯ НОРМА</b>\n━━━━━━━━━━━━━━━━━━━━\n"
@@ -497,7 +540,7 @@ async def process_treat_input(message: Message, state: FSMContext):
             f"💬 <i>{clean_html_tags(str(food_data.get('comment', 'Приятного аппетита!')))}</i>\n\nВнести эту вкусняшку в дневник?"
         )
         await wait_msg.edit_text(text, reply_markup=result_keyboard())
-    except: await wait_msg.edit_text("Не удалось рассчитать лакомство. Попробуй описать точнее.")
+    except Exception: await wait_msg.edit_text("Не удалось рассчитать лакомство. Попробуй описать точнее.")
 
 @dp.message(F.text == "🥗 Что приготовить")
 @dp.message(Command("fridge"))
@@ -507,37 +550,90 @@ async def fridge_handler(message: Message, state: FSMContext):
     await state.set_state(FoodStates.waiting_for_recipe)
     await message.answer("Напиши продукты через запятую, и я соберу идеальный рецепт:")
 
+# =========================================================
+# ТРЕНИРОВКИ (ОПЦИЯ А + ВЫБОР ИНВЕНТАРЯ)
+# =========================================================
 @dp.message(F.text == "🏋️ Тренировка")
 @dp.message(Command("workout"))
 async def workout_menu_handler(message: Message, state: FSMContext):
     await state.clear()
     if not await check_user_access(message.from_user.id): return await send_paywall(message)
+    text = "🏋️ <b>ТРЕНИРОВКИ И АКТИВНОСТЬ</b>\n\nГде ты планируешь тренироваться сегодня?"
+    await message.answer(text, reply_markup=get_workout_location_kb())
+
+@dp.callback_query(F.data == "workout_menu_back")
+async def workout_back_callback(callback: CallbackQuery):
+    text = "🏋️ <b>ТРЕНИРОВКИ И АКТИВНОСТЬ</b>\n\nГде ты планируешь тренироваться сегодня?"
+    await callback.message.edit_text(text, reply_markup=get_workout_location_kb())
+
+@dp.callback_query(F.data == "choose_equipment_menu")
+async def choose_equipment_menu_callback(callback: CallbackQuery):
+    text = "📦 <b>Какой инвентарь у тебя есть дома?</b>\nВыбери подходящий вариант:"
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🧘 Только коврик (без инвентаря)", callback_data="set_equip_bodyweight")],
+        [InlineKeyboardButton(text="🎗 Фитнес-резинки", callback_data="set_equip_bands")],
+        [InlineKeyboardButton(text="🏋️ Гантели / Гиря", callback_data="set_equip_dumbbells")],
+        [InlineKeyboardButton(text="🌟 Полный набор (гантели + резинки)", callback_data="set_equip_all")],
+        [InlineKeyboardButton(text="↩️ Назад к тренировкам", callback_data="workout_loc_home")]
+    ])
+    await callback.message.edit_text(text, reply_markup=kb)
+
+@dp.callback_query(F.data.startswith("set_equip_"))
+async def set_equipment_callback(callback: CallbackQuery):
+    equip = callback.data.replace("set_equip_", "")
+    user_id = callback.from_user.id
+    if db:
+        await asyncio.to_thread(db.collection('users').document(str(user_id)).set, {"home_equipment": equip}, merge=True)
+    await callback.answer(f"Инвентарь сохранён: {EQUIPMENT_NAMES.get(equip, 'Свой вес')}")
+    callback.data = "workout_loc_home"
+    await workout_location_callback(callback)
+
+@dp.callback_query(F.data.startswith("workout_loc_"))
+async def workout_location_callback(callback: CallbackQuery):
+    loc = callback.data.replace("workout_loc_", "")
+    user = await get_user_profile(callback.from_user.id)
+    gender = user.get("gender", "F") if user else "F"
+    user_equip = user.get("home_equipment", "bodyweight") if user else "bodyweight"
     
-    user = await get_user_profile(message.from_user.id)
-    fav_w = user.get("favorite_workout_name") if user else None
-    gender = user.get("gender", "F") if user else "F" # По умолчанию женские, если пол не найден
-    
-    intro = f"🏋️ <b>ТРЕНИРОВКИ</b>\n<i>Часто выбираешь: {fav_w}</i>" if fav_w else "🏋️ <b>ТРЕНИРОВКИ И АКТИВНОСТЬ</b>\nВыбери фокус-зону на сегодня:"
-    
-    # Формируем кнопки в зависимости от пола!
-    if gender == "M":
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🛡 Широкая спина и плечи", callback_data="gen_workout_gym_back")],
-            [InlineKeyboardButton(text="💪 Мощные руки и грудь", callback_data="gen_workout_gym_arms")],
-            [InlineKeyboardButton(text="🧱 Рельефный пресс и кор", callback_data="gen_workout_home_abs")],
-            [InlineKeyboardButton(text="🏋️ База (Всё тело)", callback_data="gen_workout_gym_full")],
-            [InlineKeyboardButton(text="👣 Своя активность / Шаги", callback_data="enter_custom_activity")]
-        ])
+    buttons = []
+    if loc == "home":
+        equip_title = EQUIPMENT_NAMES.get(user_equip, "🧘 Собственный вес")
+        loc_header = f"🏠 <b>Домашняя тренировка</b>\n📦 Твой инвентарь: <b>{equip_title}</b>\n\nВыбери фокус-зону занятия:"
+        if gender == "F":
+            buttons = [
+                [InlineKeyboardButton(text="🍑 Ягодицы и бёдра", callback_data="gen_workout_home_glutes")],
+                [InlineKeyboardButton(text="🧘‍♀️ Здоровая спина и осанка", callback_data="gen_workout_home_back")],
+                [InlineKeyboardButton(text="👙 Плоский живот и талия", callback_data="gen_workout_home_abs")],
+                [InlineKeyboardButton(text="🔥 Экспресс-жиросжигание (15 мин)", callback_data="gen_workout_home_full")]
+            ]
+        else:
+            buttons = [
+                [InlineKeyboardButton(text="💪 Отжимания, грудь и трицепс", callback_data="gen_workout_home_chest")],
+                [InlineKeyboardButton(text="🧱 Рельефный пресс и кор", callback_data="gen_workout_home_abs")],
+                [InlineKeyboardButton(text="🦵 Взрывные ноги и выносливость", callback_data="gen_workout_home_legs")],
+                [InlineKeyboardButton(text="🔥 Фулбоди комплекс", callback_data="gen_workout_home_full")]
+            ]
+        buttons.append([InlineKeyboardButton(text="⚙️ Изменить инвентарь дома", callback_data="choose_equipment_menu")])
     else:
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🍑 Ягодицы и бёдра", callback_data="gen_workout_home_glutes")],
-            [InlineKeyboardButton(text="🧘‍♀️ Здоровая спина и осанка", callback_data="gen_workout_home_back")],
-            [InlineKeyboardButton(text="👙 Плоский живот и талия", callback_data="gen_workout_home_abs")],
-            [InlineKeyboardButton(text="🔥 Жиросжигание (Всё тело)", callback_data="gen_workout_home_full")],
-            [InlineKeyboardButton(text="👣 Своя активность / Шаги", callback_data="enter_custom_activity")]
-        ])
-        
-    await message.answer(intro, reply_markup=kb)
+        loc_header = "🏋️ <b>Тренировка в тренажёрном зале</b>\n\nВыбери фокус-зону занятия:"
+        if gender == "F":
+            buttons = [
+                [InlineKeyboardButton(text="🍑 Ягодицы и ноги (тренажёры)", callback_data="gen_workout_gym_glutes")],
+                [InlineKeyboardButton(text="✨ Спина, плечи и осанка", callback_data="gen_workout_gym_back")],
+                [InlineKeyboardButton(text="👙 Пресс и функционал", callback_data="gen_workout_gym_abs")],
+                [InlineKeyboardButton(text="🏋️ Рельефное тело (Фулбоди)", callback_data="gen_workout_gym_full")]
+            ]
+        else:
+            buttons = [
+                [InlineKeyboardButton(text="🛡 Широкая спина и бицепс", callback_data="gen_workout_gym_back")],
+                [InlineKeyboardButton(text="💪 Мощная грудь и трицепс", callback_data="gen_workout_gym_chest")],
+                [InlineKeyboardButton(text="🦵 Мощные ноги и плечи", callback_data="gen_workout_gym_legs")],
+                [InlineKeyboardButton(text="🏋️ Силовая база (Всё тело)", callback_data="gen_workout_gym_full")]
+            ]
+            
+    buttons.append([InlineKeyboardButton(text="↩️ Назад к выбору места", callback_data="workout_menu_back")])
+    await callback.message.edit_text(loc_header, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
 @dp.callback_query(F.data == "enter_custom_activity")
 async def enter_activity_callback(callback: CallbackQuery, state: FSMContext):
     await state.set_state(ActivityStates.waiting_for_activity)
@@ -546,42 +642,66 @@ async def enter_activity_callback(callback: CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data.startswith("gen_workout_"))
 async def generate_workout_callback(callback: CallbackQuery):
     p = callback.data.replace("gen_workout_", "").split("_")
-    # p[0] - loc (home/gym), p[1] - focus (glutes, back, arms, abs, full)
-    
-    loc = "дома (с ковриком и легким весом)" if p[0] == "home" else "в тренажёрном зале"
-    
-    # Переводим фокус на понятный нейросети язык
-    focus_map = {
-        "glutes": "ягодицы и ноги (акцент на низ)",
-        "back": "здоровая спина и осанка (укрепление мышечного корсета)",
-        "arms": "руки, плечи и грудь (верх тела)",
-        "abs": "пресс, кор и талия",
-        "full": "всё тело (комплексная жиросжигающая тренировка)"
-    }
-    focus_str = focus_map.get(p[1], "общеукрепляющая")
+    loc_type, focus_type = p[0], p[1]
     
     user = await get_user_profile(callback.from_user.id)
     gender_str = "мужчины" if user.get("gender") == "M" else "девушки"
+    user_goal = user.get("goal", "loss")
+    user_equip = user.get("home_equipment", "bodyweight")
     
-    await callback.message.edit_text(f"⏳ Подбираю программу на {focus_str}...")
+    equip_desc_map = {
+        "bodyweight": "собственный вес тела и коврик (БЕЗ дополнительного инвентаря)",
+        "bands": "фитнес-резинки (эспандеры) и коврик",
+        "dumbbells": "гантели (или гири) и коврик",
+        "all": "гантели, фитнес-резинки и коврик"
+    }
+    
+    if loc_type == "home":
+        equip_text = equip_desc_map.get(user_equip, "собственный вес")
+        loc_desc = f"дома, используя ТОЛЬКО следующий инвентарь: {equip_text}"
+    else:
+        loc_desc = "в тренажёрном зале (с использованием блочных тренажёров, штанг и гантелей)"
+    
+    focus_map = {
+        "glutes": "ягодицы и ноги (акцент на форму и тонус)",
+        "back": "спина и королевская осанка (укрепление мышечного корсета)",
+        "abs": "мышцы пресса, кора и талии",
+        "chest": "грудные мышцы и руки",
+        "legs": "мышцы ног и выносливость",
+        "arms": "руки, плечи и грудь",
+        "full": "всё тело (комплексная жиросжигающая/силовая тренировка)"
+    }
+    focus_desc = focus_map.get(focus_type, "всё тело")
+    
+    await callback.message.edit_text(f"⏳ Составляю идеальную программу: <b>{focus_desc}</b>...")
     
     prompt = (
-        f"Составь тренировку {loc} для {gender_str}. Цель пользователя: '{user.get('goal', 'loss')}'. "
-        f"ФОКУС-ЗОНА: {focus_str}.\n"
-        "Тренировка должна занимать около 30-40 минут. "
-        "Обязательно добавь к каждому упражнению краткое описание техники (1 предложение).\n"
-        "НЕ ИСПОЛЬЗУЙ таблицы (|) и заголовки (###). Только HTML теги (<b>, <i>).\n"
-        "Верни В КОНЦЕ строку: ESTIMATED_KCAL:[число]"
+        f"Ты топ-фитнес тренер. Составь эффективную тренировку {loc_desc} для {gender_str}. "
+        f"Цель клиента: '{user_goal}'. ФОКУС: {focus_desc}.\n"
+        "Тренировка на 30-40 минут (4-5 упражнений). К каждому упражнению дай 1 понятное предложение с техникой безопасности.\n"
+        "НЕ используй Markdown-таблицы (|). Используй только чистые HTML-теги (<b>, <i>).\n"
+        "В САМОМ КОНЦЕ ответа обязательно напиши строчку строго в формате: ESTIMATED_KCAL:[число]"
     )
+    
     try:
         raw_resp = await ask_ai(prompt=prompt, model=AI_MODEL)
         kcal_m = re.search(r"ESTIMATED_KCAL:(\d+)", raw_resp)
         est_kcal = int(kcal_m.group(1)) if kcal_m else 250
-        clean_t = clean_html_tags(re.sub(r"ESTIMATED_KCAL:\d+", "", raw_resp).strip())
+        clean_text = clean_html_tags(re.sub(r"ESTIMATED_KCAL:\d+", "", raw_resp).strip())
         
-        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"✅ Выполнил(а) (+{est_kcal} ккал)", callback_data=f"done_workout_{est_kcal}")]])
-        await callback.message.edit_text(clean_t, reply_markup=kb)
-    except: await callback.message.edit_text("Не удалось составить тренировку.")
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=f"✅ Выполнил(а) (+{est_kcal} ккал)", callback_data=f"done_workout_{est_kcal}")],
+            [InlineKeyboardButton(text="↩️ Другая тренировка", callback_data=f"workout_loc_{loc_type}")]
+        ])
+        await callback.message.edit_text(clean_text, reply_markup=kb)
+    except Exception:
+        await callback.message.edit_text(
+            "Не удалось сгенерировать тренировку. Попробуй ещё раз.", 
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="↩️ Назад", callback_data=f"workout_loc_{loc_type}")]
+            ])
+        )
+
 @dp.message(ActivityStates.waiting_for_activity)
 async def process_custom_activity(message: Message, state: FSMContext):
     await state.set_state(None)
@@ -598,7 +718,7 @@ async def process_custom_activity(message: Message, state: FSMContext):
         burned, title, cmt = int(act_data.get("burned_kcal", 150)), clean_html_tags(str(act_data.get("title", "Активность"))), clean_html_tags(str(act_data.get("comment", "Отличная работа!")))
         text = f"🏃 <b>{title}</b>\n━━━━━━━━━━━━━━━━━━━━\n🔥 Расход: <b>{burned} ккал</b>\n\n💬 <i>{cmt}</i>\n\nДобавить в дневник?"
         await wait_msg.edit_text(text, reply_markup=activity_result_keyboard())
-    except: await wait_msg.edit_text("Не удалось рассчитать активность.")
+    except Exception: await wait_msg.edit_text("Не удалось рассчитать активность.")
 
 @dp.callback_query(F.data == "activity_save")
 async def save_activity_handler(callback: CallbackQuery, state: FSMContext):
@@ -627,6 +747,9 @@ async def done_workout_callback(callback: CallbackQuery):
     await callback.message.edit_text(f"{callback.message.text}\n\n✅ <b>Сожжено {burned} ккал! Зачтено в дневник.</b>")
     await send_today(callback.message, user_id=callback.from_user.id)
 
+# =========================================================
+# ВОПРОС НУТРИЦИОЛОГУ / ВЕС / ПОМОЩЬ
+# =========================================================
 @dp.message(F.text == "💬 Спросить нутрициолога")
 @dp.message(Command("ask"))
 async def ask_nutritionist_handler(message: Message, state: FSMContext):
@@ -648,7 +771,7 @@ async def process_nutritionist_question(message: Message, state: FSMContext):
         "Дай заботливый ответ нутрициолога. Используй HTML теги. Без списков с решётками (###)."
     )
     try: await wait_msg.edit_text(clean_html_tags(await ask_ai(prompt=prompt, model=AI_MODEL)))
-    except: await wait_msg.edit_text("Не удалось получить ответ.")
+    except Exception: await wait_msg.edit_text("Не удалось получить ответ.")
 
 @dp.message(F.text == "⚖️ Вес")
 @dp.message(Command("weight"))
@@ -663,7 +786,15 @@ async def weight_handler(message: Message, state: FSMContext):
 @dp.message(Command("help"))
 async def help_handler(message: Message, state: FSMContext):
     await state.clear()
-    await message.answer("📸 Пришли фото еды — я посчитаю КБЖУ.\n🗣 Или наговори голосом!")
+    text = (
+        "💡 <b>КАК ПОЛЬЗОВАТЬСЯ NUTRI AI</b>\n\n"
+        "1. 📸 <b>Фото или скриншот еды:</b> просто пришли снимок — я определю состав и рассчитаю КБЖУ.\n"
+        "2. 🗣 <b>Голосовые:</b> наговори то, что съел(а), или задай вопрос нутрициологу.\n"
+        "3. 💧 <b>Вода:</b> жми «+250 мл воды» под дневником «📊 Сегодня».\n"
+        "4. 🏋️ <b>Тренировки:</b> выбери «Дома» или «В зале», укажи инвентарь и получи план!\n"
+        "5. 🥗 <b>Холодильник:</b> перечисли продукты, и я составлю вкусный ПП-рецепт."
+    )
+    await message.answer(text)
 
 # =========================================================
 # ОНБОРДИНГ
@@ -770,7 +901,7 @@ async def finish_onboarding(target_msg, state: FSMContext, user_id: int, allergy
     
     eu = await get_user_profile(user_id)
     is_new = eu is None or not eu.get("trial_until")
-    now = datetime.now()
+    now = now_local()
     
     if is_new:
         tu, pu, ca = (now + timedelta(days=14)).isoformat(), None, now.isoformat()
@@ -780,7 +911,7 @@ async def finish_onboarding(target_msg, state: FSMContext, user_id: int, allergy
     ud = {
         "user_id": user_id, "gender": d["gender"], "age": d["age"], "height": d["height"], "weight": d["weight"], 
         "goal": d["goal"], "activity": d["activity"], "diet": d.get("diet", "all"), "family_mode": d.get("family_mode", "self"), 
-        "allergies": allergy_text, "calories": norm["calories"], "protein": norm["protein"], "fat": norm["fat"], "carbs": norm["carbs"],
+        "allergies": allergy_text, "home_equipment": "bodyweight", "calories": norm["calories"], "protein": norm["protein"], "fat": norm["fat"], "carbs": norm["carbs"],
         "target_weight": tw, "trial_until": tu, "premium_until": pu, "created_at": ca
     }
     await save_user_profile(user_id, ud)
@@ -823,13 +954,14 @@ async def profile_recount_norm_handler(callback: CallbackQuery, state: FSMContex
 @dp.callback_query(F.data == "add_water_250")
 async def add_water_handler(callback: CallbackQuery):
     doc_id = f"{callback.from_user.id}_{today_str()}"
+    new_w = 250
     if db:
         doc_ref = db.collection('diaries').document(doc_id)
         doc = await asyncio.to_thread(doc_ref.get)
         new_w = (doc.to_dict().get('water', 0) if doc.exists else 0) + 250
         await asyncio.to_thread(doc_ref.set, {'water': new_w}, merge=True)
-        await callback.answer(f"💧 Добавлено 250 мл! Всего: {new_w} мл")
-        await send_today(callback.message, user_id=callback.from_user.id)
+    await callback.answer(f"💧 Добавлено 250 мл! Всего: {new_w} мл")
+    await send_today(callback.message, user_id=callback.from_user.id)
 
 @dp.callback_query(F.data == "delete_last_meal")
 async def delete_last_meal_callback(callback: CallbackQuery):
@@ -864,18 +996,19 @@ async def send_morning_digest():
     if not db: return
     for doc in (await asyncio.to_thread(db.collection('users').get)):
         try: await bot.send_message(chat_id=int(doc.id), text=f"☀️ Доброе утро!\nПлан на день: <b>{doc.to_dict().get('calories', 2000)} ккал</b>\n\n{random.choice(NUTRITION_TIPS)}")
-        except: pass
+        except Exception: pass
 
 async def send_evening_digest():
     if not db: return
     for doc in (await asyncio.to_thread(db.collection('users').get)):
-        u, uid = doc.to_dict(), doc.id
+        uid = doc.id
+        u = doc.to_dict()
         diary = await asyncio.to_thread(db.collection('diaries').document(f"{uid}_{today_str()}").get)
         if not diary.exists or not diary.to_dict().get('meals'): continue
         m = diary.to_dict().get('meals', [])
         prompt = f"Оцени день: съедено {sum(x.get('calories',0) for x in m)}/{u.get('calories', 2000)} ккал. Напиши теплый разбор. Используй HTML."
         try: await bot.send_message(chat_id=int(uid), text=f"🌙 <b>Итоги дня</b>\n━━━━━━━━━\n{clean_html_tags(await ask_ai(prompt=prompt, model=AI_MODEL))}")
-        except: pass
+        except Exception: pass
 
 # =========================================================
 # УМНЫЙ ИИ (ГОЛОС И ТЕКСТ) — ЖИВОЕ МЫШЛЕНИЕ
@@ -922,10 +1055,10 @@ async def voice_handler(message: Message, state: FSMContext):
         text = (await ai_client.audio.transcriptions.create(model="whisper-1", file=buffer)).text
         await wait_msg.edit_text(f"🗣 <b>Ты сказал(а):</b> «{text}»\n\n⏳ Думаю...")
         await process_smart_input(text, message, state, wait_msg)
-    except: await wait_msg.edit_text("Ошибка аудио.")
+    except Exception: await wait_msg.edit_text("Ошибка аудио.")
 
 # =========================================================
-# РЕЦЕПТЫ И ФОТО ЕДЫ — ЖИВОЕ МЫШЛЕНИЕ
+# РЕЦЕПТЫ И ФОТО / СКРИНШОТЫ ЕДЫ
 # =========================================================
 @dp.message(FoodStates.waiting_for_recipe)
 async def recipe_handler(message: Message, state: FSMContext):
@@ -934,7 +1067,7 @@ async def recipe_handler(message: Message, state: FSMContext):
     await bot.send_chat_action(chat_id=message.chat.id, action="typing")
     u = await get_user_profile(message.from_user.id) or {}
     try: await wait_msg.edit_text(clean_html_tags(await ask_ai(prompt=f"Рецепт из: {message.text}. Цель: {u.get('goal')}. Режим: {u.get('family_mode')}. HTML.", model=AI_MODEL)))
-    except: await wait_msg.edit_text("Ошибка рецепта.")
+    except Exception: await wait_msg.edit_text("Ошибка рецепта.")
 
 @dp.message(F.photo)
 async def photo_handler(message: Message, state: FSMContext):
@@ -958,7 +1091,7 @@ async def photo_handler(message: Message, state: FSMContext):
         res = await ask_ai(image_base64=b64, prompt=prompt, model=AI_VISION_MODEL)
         await state.update_data(recognized_food=res, image_base64=b64)
         await wait_msg.edit_text(f"{clean_html_tags(res)}\n\nВсё верно?", reply_markup=food_keyboard())
-    except: await wait_msg.edit_text("Не удалось распознать фото.")
+    except Exception: await wait_msg.edit_text("Не удалось распознать фото.")
 
 @dp.callback_query(F.data == "food_correct")
 async def food_correct_handler(callback: CallbackQuery, state: FSMContext):
@@ -972,7 +1105,7 @@ async def food_correct_handler(callback: CallbackQuery, state: FSMContext):
         await state.update_data(calculated_food=food_data)
         txt = f"🍽 <b>{food_data['title']}</b>\n━━━━━━━━━\n🔥 <b>{food_data['calories']} ккал</b>\nБ: {food_data['protein']}г | Ж: {food_data['fat']}г | У: {food_data['carbs']}г\n\n💬 <i>{food_data.get('comment','')}</i>\nВнести в дневник?"
         await callback.message.edit_text(txt, reply_markup=result_keyboard())
-    except: await callback.message.edit_text("Ошибка расчета.")
+    except Exception: await callback.message.edit_text("Ошибка расчета.")
 
 @dp.callback_query(F.data == "food_edit")
 async def food_edit_handler(callback: CallbackQuery, state: FSMContext):
@@ -990,7 +1123,14 @@ async def correcting_handler(message: Message, state: FSMContext):
 @dp.callback_query(F.data == "meal_save")
 async def save_meal_handler(callback: CallbackQuery, state: FSMContext):
     food = (await state.get_data()).get("calculated_food", {})
-    await add_meal_to_today(callback.from_user.id, {"title": food.get("title", "Еда"), "calories": food.get("calories", 0), "protein": food.get("protein", 0), "fat": food.get("fat", 0), "carbs": food.get("carbs", 0), "created_at": datetime.now().isoformat()})
+    await add_meal_to_today(callback.from_user.id, {
+        "title": food.get("title", "Еда"), 
+        "calories": food.get("calories", 0), 
+        "protein": food.get("protein", 0), 
+        "fat": food.get("fat", 0), 
+        "carbs": food.get("carbs", 0), 
+        "created_at": now_local().isoformat()
+    })
     await state.clear()
     await callback.message.edit_text("✅ Сохранено в дневник.")
     await send_today(callback.message, user_id=callback.from_user.id)
