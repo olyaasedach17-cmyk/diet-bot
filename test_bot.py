@@ -70,6 +70,10 @@ def mock_message():
     msg = AsyncMock(spec=Message)
     msg.from_user = User(id=123456789, is_bot=False, first_name="TestUser")
     msg.chat = Chat(id=123456789, type="private")
+    # Добавляем явное указание, что методы отправки сообщений - асинхронные
+    msg.answer = AsyncMock()
+    msg.edit_text = AsyncMock()
+    msg.answer_photo = AsyncMock()
     return msg
 
 @pytest.fixture
