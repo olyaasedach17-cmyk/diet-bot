@@ -24,6 +24,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install pytest aiohttp aiogram openai firebase-admin python-dotenv apscheduler
 
-      - name: Запуск автотестов
+     - name: Запуск автотестов
+        env:
+          BOT_TOKEN: "fake_token"
+          AI_API_KEY: "fake_key"
+          AI_BASE_URL: "https://fake.url"
         run: |
           pytest test_bot.py -v
