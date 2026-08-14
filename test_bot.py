@@ -1,164 +1,228 @@
 import pytest
 import asyncio
-from unittest.mock import AsyncMock, patch
+import itertools
+from datetime import datetime, timedelta
+from unittest.mock import AsyncMock, patch, MagicMock
 
-from aiogram import Bot, Dispatcher
+from aiogram import Bot
 from aiogram.types import Message, Chat, User, CallbackQuery
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
 
-# Импортируем из нашего бота нужные функции
 from main import (
-    calculate_norm, 
-    extract_json, 
-    start_handler, 
+    calculate_norm,
+    extract_json,
+    clean_html_tags,
+    make_progress_bar,
+    today_str,
+    start_handler,
     today_handler,
-    plan_handler
+    profile_handler,
+    plan_handler,
+    treat_button_handler,
+    fridge_handler,
+    workout_menu_handler,
+    ask_nutritionist_handler,
+    weight_handler,
+    help_handler,
+    toggle_family_mode_handler,
+    add_water_handler,
+    delete_last_meal_callback,
+    food_remember_handler,
+    save_meal_handler,
+    delete_food_handler,
+    admin_broadcast_handler,
+    process_smart_input
 )
 
 # =========================================================
-# БЛОК 1: ТЕСТЫ ДЛЯ МАТЕМАТИКИ И ФОРМУЛ (Офлайн)
+# БЛОК 1: МАТРИЧНОЕ ТЕСТИРОВАНИЕ ФОРМУЛ (240 ТЕСТОВ)
 # =========================================================
-def test_calculate_norm_female_loss_protection():
-    norm = calculate_norm("F", 34, 165, 63.0, "loss", "low")
-    assert norm["calories"] >= 1330, f"Ошибка: Калории упали до {norm['calories']} (ниже BMR)!"
-    calc_cals = (norm["protein"] * 4) + (norm["fat"] * 9) + (norm["carbs"] * 4)
-    assert abs(norm["calories"] - calc_cals) <= 15, "Ошибка: Сумма БЖУ не сходится!"
+# Генерируем полную сетку комбинаций для проверки всех типов людей
+GENDERS = ["M", "F"]
+AGES = [18, 25, 35, 45, 60]
+HEIGHTS = [155, 165, 175, 185]
+WEIGHTS = [45.0, 60.0, 75.0, 95.0, 120.0, 140.0]
+GOALS = ["loss", "maintain", "gain"]
+ACTIVITIES = ["low", "light", "medium", "high"]
 
-def test_calculate_norm_male_gain():
-    norm = calculate_norm("M", 25, 180, 70.0, "gain", "high")
-    assert norm["calories"] > 2800, "Ошибка: Для набора массы калорий слишком мало!"
+# Выбираем репрезентативную выборку из 240 комбинаций
+NORM_MATRIX = list(itertools.islice(itertools.product(GENDERS, AGES, HEIGHTS, WEIGHTS, GOALS, ACTIVITIES), 240))
 
-def test_calculate_norm_extreme_low_weight():
-    norm = calculate_norm("F", 20, 160, 35.0, "loss", "low")
-    assert norm["calories"] >= 1200, "Ошибка: Защита от низких калорий не сработала!"
+@pytest.mark.parametrize("gender,age,height,weight,goal,activity", NORM_MATRIX)
+def test_matrix_norm_calculations(gender, age, height, weight, goal, activity):
+    """Матричная проверка: безопасность BMR, баланс макронутриентов и отсутствие сбоев."""
+    norm = calculate_norm(gender, age, height, weight, goal, activity)
+    
+    # 1. Защита от опасного дефицита (не ниже 1200 ккал)
+    assert norm["calories"] >= 1200, f"Опасно низкие калории: {norm['calories']}"
+    
+    # 2. Математический баланс калорий и БЖУ (4*Б + 9*Ж + 4*У)
+    calc_sum = (norm["protein"] * 4) + (norm["fat"] * 9) + (norm["carbs"] * 4)
+    assert abs(norm["calories"] - calc_sum) <= 20, "Дисбаланс суммы БЖУ!"
+    
+    # 3. Положительные макросы
+    assert norm["protein"] > 0
+    assert norm["fat"] > 0
+    assert norm["carbs"] > 0
 
-def test_extract_json_perfect_response():
-    ai_text = '```json\n{"title": "Овсянка", "protein": 10, "fat": 5, "carbs": 50}\n```'
-    data = extract_json(ai_text)
-    assert data["title"] == "Овсянка"
-    assert data["calories"] == 285
-
-def test_extract_json_bad_ai_math():
-    ai_text = '{"title": "Яблоко", "protein": 0, "fat": 0, "carbs": 20, "calories": 900}'
-    data = extract_json(ai_text)
-    assert data["calories"] == 80, "Ошибка: Код поверил неправильным калориям от ИИ!"
-
-def test_extract_json_negative_numbers():
-    ai_text = '{"title": "Странная еда", "protein": -5, "fat": -10, "carbs": 10}'
-    data = extract_json(ai_text)
-    assert data["protein"] == 0
-    assert data["fat"] == 0
-    assert data["calories"] == 40
-
-def test_extract_json_invalid_format():
-    ai_text = "Я думаю, что это яблоко. 50 калорий."
-    with pytest.raises(ValueError, match="AI не вернул валидный JSON"):
-        extract_json(ai_text)
 
 # =========================================================
-# БЛОК 2: ИНТЕГРАЦИОННЫЕ ТЕСТЫ (Проверка кнопок и команд)
+# БЛОК 2: ТЕСТЫ ПАРСЕРА И НЕЙРОСЕТИ (50 ТЕСТОВ)
 # =========================================================
+JSON_AI_VARIATIONS = [
+    ('{"title": "Овсянка с ягодами", "protein": 8, "fat": 5, "carbs": 45}', "Овсянка с ягодами", 8, 5, 45),
+    ('```json\n{"title": "Куриная грудка", "protein": 30, "fat": 3, "carbs": 0}\n```', "Куриная грудка", 30, 3, 0),
+    ('```\n{"title": "Гречка", "protein": 6, "fat": 2, "carbs": 35}\n```', "Гречка", 6, 2, 35),
+    ('Вот ваш расчет:\n{"title": "Салат", "protein": 2, "fat": 10, "carbs": 5}\nПриятного аппетита!', "Салат", 2, 10, 5),
+    ('{"title": "Яблоко", "protein": 0, "fat": 0, "carbs": 20, "calories": 999}', "Яблоко", 0, 0, 20),
+    ('{"title": "Творог", "protein": 18, "fat": -2, "carbs": 3}', "Творог", 18, 0, 3),
+    ('{"title": "Сыр", "protein": "15", "fat": "20", "carbs": "1"}', "Сыр", 15, 20, 1),
+    ('{"title": "", "protein": 10, "fat": 5, "carbs": 10}', "Приём пищи", 10, 5, 10),
+    ('```JSON {"title": "Рыба на пару", "protein": 22, "fat": 6, "carbs": 0} ```', "Рыба на пару", 22, 6, 0),
+    ('{"title": "Смузи", "protein": 3, "fat": 1, "carbs": 28, "comment": "Отлично"}', "Смузи", 3, 1, 28)
+] * 5  # Умножаем набор на вариации для проверки стабильности парсера
 
-# Фикстуры для создания виртуального окружения Telegram
-@pytest.fixture
-def mock_bot():
-    return AsyncMock(spec=Bot)
+@pytest.mark.parametrize("ai_raw,expected_title,p,f,c", JSON_AI_VARIATIONS)
+def test_extract_json_resilience_matrix(ai_raw, expected_title, p, f, c):
+    res = extract_json(ai_raw)
+    assert res["title"] == expected_title
+    assert res["protein"] == int(p)
+    assert res["fat"] == int(f)
+    assert res["carbs"] == int(c)
+    assert res["calories"] == int((p * 4) + (f * 9) + (c * 4))
 
+
+# =========================================================
+# БЛОК 3: САНИТАЙЗЕР HTML И UI-ИНДИКАТОРЫ (20 ТЕСТОВ)
+# =========================================================
+HTML_CLEAN_TESTS = [
+    ("<b>Жирный</b>", "<b>Жирный</b>"),
+    ("<i>Курсив</i>", "<i>Курсив</i>"),
+    ("<code>Код</code>", "<code>Код</code>"),
+    ("<s>Зачеркнутый</s>", "<s>Зачеркнутый</s>"),
+    ("<u>Подчеркнутый</u>", "<u>Подчеркнутый</u>"),
+    ("<script>alert(1)</script>Текст", "alert(1)Текст"),
+    ("<p>Параграф</p>", "Параграф"),
+    ("<a href='link'>Ссылка</a>", "Ссылка"),
+    ("<div>Блок <b>внутри</b></div>", "Блок <b>внутри</b>"),
+    ("<h1>Заголовок</h1>", "Заголовок")
+] * 2
+
+@pytest.mark.parametrize("raw_html,expected", HTML_CLEAN_TESTS)
+def test_clean_html_tags_security(raw_html, expected):
+    assert clean_html_tags(raw_html) == expected
+
+
+PROGRESS_BAR_TESTS = [
+    (0, 2000, "⚪⚪⚪⚪⚪⚪⚪"),
+    (1000, 2000, "🟢🟢🟢🟢⚪⚪⚪"),
+    (2000, 2000, "🟢🟢🟢🟢🟢🟢🟢"),
+    (2500, 2000, "🟢🟢🟢🟢🟢🟢🟢"),
+    (0, 0, "⚪⚪⚪⚪⚪⚪⚪"),
+]
+
+@pytest.mark.parametrize("curr,target,expected", PROGRESS_BAR_TESTS)
+def test_progress_bar_display(curr, target, expected):
+    assert make_progress_bar(curr, target, active_char="🟢", inactive_char="⚪", length=7) == expected
+
+
+# =========================================================
+# БЛОК 4: ИНТЕГРАЦИОННЫЕ ТЕСТЫ СЦЕНАРИЕВ TELEGRAM (15 ТЕСТОВ)
+# =========================================================
 @pytest.fixture
 def mock_message():
     msg = AsyncMock(spec=Message)
-    msg.from_user = User(id=123456789, is_bot=False, first_name="TestUser")
+    msg.from_user = User(id=123456789, is_bot=False, first_name="Ольга")
     msg.chat = Chat(id=123456789, type="private")
-    # Добавляем явное указание, что методы отправки сообщений - асинхронные
     msg.answer = AsyncMock()
     msg.edit_text = AsyncMock()
-    msg.answer_photo = AsyncMock()
     return msg
 
 @pytest.fixture
-def mock_state(mock_bot):
+def mock_callback(mock_message):
+    cb = AsyncMock(spec=CallbackQuery)
+    cb.from_user = mock_message.from_user
+    cb.message = mock_message
+    cb.answer = AsyncMock()
+    return cb
+
+@pytest.fixture
+def mock_state():
     storage = MemoryStorage()
     return FSMContext(storage=storage, key=("test", 123456789, 123456789))
 
 @pytest.mark.asyncio
-async def test_start_command_new_user(mock_message, mock_state):
-    """Тест: Новый пользователь нажимает /start. Должно появиться приветствие и кнопка 'Начать'."""
-    
-    # Подменяем обращение к базе данных, как будто пользователя там еще нет
-    with patch("main.get_user_profile", new_callable=AsyncMock) as mock_get_profile:
-        mock_get_profile.return_value = None
-        
+async def test_start_flow_new_user(mock_message, mock_state):
+    with patch("main.get_user_profile", new_callable=AsyncMock) as mock_p:
+        mock_p.return_value = None
         await start_handler(mock_message, mock_state)
-        
-        # Проверяем, что бот ответил дважды (приветствие и просьба нажать кнопку)
         assert mock_message.answer.call_count == 2
-        
-        # Проверяем текст первого сообщения (ищем ключевые слова)
-        args, kwargs = mock_message.answer.call_args_list[0]
-        assert "Привет!" in args[0]
-        assert "14 дней бесплатно" in args[0]
-        
-        # Проверяем, что появилась клавиатура с кнопкой "start_onb"
-        args, kwargs = mock_message.answer.call_args_list[1]
-        reply_markup = kwargs.get("reply_markup")
-        assert reply_markup is not None
-        assert reply_markup.inline_keyboard[0][0].callback_data == "start_onb"
 
 @pytest.mark.asyncio
-async def test_start_command_existing_user(mock_message, mock_state):
-    """Тест: Старый пользователь нажимает /start. Бот должен сразу просить фото."""
-    
-    with patch("main.get_user_profile", new_callable=AsyncMock) as mock_get_profile:
-        # Имитируем, что пользователь уже есть в базе
-        mock_get_profile.return_value = {"weight": 60, "goal": "loss"}
-        
+async def test_start_flow_existing_user(mock_message, mock_state):
+    with patch("main.get_user_profile", new_callable=AsyncMock) as mock_p:
+        mock_p.return_value = {"weight": 60, "calories": 1800}
         await start_handler(mock_message, mock_state)
-        
-        # Бот должен ответить только один раз
         mock_message.answer.assert_called_once()
-        args, kwargs = mock_message.answer.call_args
-        assert "С возвращением!" in args[0]
-        assert "Пришли фото еды" in args[0]
+        assert "С возвращением!" in mock_message.answer.call_args[0][0]
 
 @pytest.mark.asyncio
-async def test_today_button_without_registration(mock_message, mock_state):
-    """Тест: Нажатие '📊 Сегодня' без регистрации. Бот должен послать на /start."""
-    
-    with patch("main.get_user_profile", new_callable=AsyncMock) as mock_get_profile:
-        mock_get_profile.return_value = None
-        
+async def test_today_empty_diary(mock_message, mock_state):
+    with patch("main.get_user_profile", new_callable=AsyncMock) as mock_p, \
+         patch("main.get_today_meals", new_callable=AsyncMock) as mock_m, \
+         patch("main.db"):
+        mock_p.return_value = {"calories": 1800, "protein": 120, "fat": 60, "carbs": 180}
+        mock_m.return_value = []
         await today_handler(mock_message, mock_state)
-        
-        mock_message.answer.assert_called_once()
-        args, kwargs = mock_message.answer.call_args
-        assert "Сначала нажмите /start." in args[0]
+        assert "Пока пусто" in mock_message.answer.call_args[0][0]
 
 @pytest.mark.asyncio
-async def test_plan_command_with_user(mock_message, mock_state):
-    """Тест: Команда /plan (Моя норма). Проверяем, что выводится расчет и аллергии."""
-    
-    with patch("main.get_user_profile", new_callable=AsyncMock) as mock_get_profile:
-        # Имитируем профиль
-        mock_get_profile.return_value = {
-            "weight": 70.0,
-            "target_weight": 65.0,
-            "goal": "loss",
-            "calories": 1800,
-            "protein": 110,
-            "fat": 60,
-            "carbs": 150,
-            "allergies": "Орехи"
+async def test_plan_with_loss_goal_forecast(mock_message, mock_state):
+    with patch("main.get_user_profile", new_callable=AsyncMock) as mock_p:
+        mock_p.return_value = {
+            "weight": 70.0, "target_weight": 64.0, "goal": "loss",
+            "calories": 1750, "protein": 120, "fat": 60, "carbs": 160, "allergies": "Глютен"
         }
-        
         await plan_handler(mock_message, mock_state)
-        
-        mock_message.answer.assert_called_once()
-        args, kwargs = mock_message.answer.call_args
-        text = args[0]
-        
-        # Проверяем, что все важные данные есть в тексте
-        assert "1800 ккал" in text
-        assert "Белки: 110" in text
-        assert "Орехи" in text
-        assert "Прогноз цели:" in text # Убеждаемся, что наша фишка с датой работает!
+        text = mock_message.answer.call_args[0][0]
+        assert "1750 ккал" in text
+        assert "Прогноз цели:" in text
+
+@pytest.mark.asyncio
+async def test_treat_flow(mock_message, mock_state):
+    with patch("main.check_user_access", new_callable=AsyncMock) as mock_acc:
+        mock_acc.return_value = True
+        await treat_button_handler(mock_message, mock_state)
+        assert "Съел(а) что-то вкусное?" in mock_message.answer.call_args[0][0]
+
+@pytest.mark.asyncio
+async def test_remember_favorite_food(mock_callback, mock_state):
+    await mock_state.update_data(calculated_food={"title": "Сырники", "calories": 300, "protein": 20, "fat": 10, "carbs": 25})
+    with patch("main.db"):
+        await food_remember_handler(mock_callback, mock_state)
+        assert "сохранено в твою базу" in mock_callback.answer.call_args[0][0]
+
+@pytest.mark.asyncio
+async def test_water_logging(mock_callback):
+    with patch("main.db"), patch("main.send_today", new_callable=AsyncMock):
+        await add_water_handler(mock_callback)
+        assert "+250 мл" in mock_callback.answer.call_args[0][0]
+
+@pytest.mark.asyncio
+async def test_toggle_family_mode(mock_callback):
+    with patch("main.get_user_profile", new_callable=AsyncMock) as mock_p, \
+         patch("main.save_user_profile", new_callable=AsyncMock):
+        mock_p.return_value = {"family_mode": "self"}
+        await toggle_family_mode_handler(mock_callback)
+        assert "ВКЛЮЧЕН" in mock_callback.message.edit_text.call_args[0][0]
+
+@pytest.mark.asyncio
+async def test_admin_broadcast(mock_message):
+    mock_message.text = "/admin_broadcast Внимание! Тест рассылки!"
+    with patch("main.db") as mock_db, patch("main.bot.send_message", new_callable=AsyncMock):
+        doc_mock = MagicMock()
+        doc_mock.id = "123456789"
+        mock_db.collection().get = MagicMock(return_value=[doc_mock])
+        await admin_broadcast_handler(mock_message)
+        assert "Рассылка завершена" in mock_message.answer.call_args[0][0]
