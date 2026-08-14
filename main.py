@@ -455,6 +455,7 @@ async def profile_handler(message: Message, state: FSMContext):
     equip_str = EQUIPMENT_NAMES.get(user.get("home_equipment", "bodyweight"), "Свой вес")
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❤️ Моя база любимых блюд", callback_data="show_favorite_foods")],
         [InlineKeyboardButton(text="👨‍👩‍👧‍👦 Режим семьи: изменить", callback_data="toggle_family_mode")],
         [InlineKeyboardButton(text="🛡 Изменить аллергии", callback_data="profile_edit_allergies")],
         [InlineKeyboardButton(text="⚙️ Пересчитать норму (Опрос)", callback_data="profile_recount_norm")]
@@ -468,6 +469,32 @@ async def profile_handler(message: Message, state: FSMContext):
         f"👶 Режим: {fam_str}\n🛡 Аллергии: {user.get('allergies', 'Нет')}",
         reply_markup=kb
     )
+@dp.callback_query(F.data == "show_favorite_foods")
+async def show_favorite_foods_handler(callback: CallbackQuery):
+    user = await get_user_profile(callback.from_user.id)
+    favs = user.get("favorite_foods", []) if user else []
+    
+    if not favs:
+        return await callback.answer("Твоя база блюд пока пуста. Нажимай '❤️ Запомнить' при сохранении еды!", show_alert=True)
+    
+    text = "❤️ <b>ТВОЯ БАЗА ЛЮБИМЫХ БЛЮД</b>\n<i>Я подглядываю сюда, когда ты пишешь мне еду текстом или голосом.</i>\n\n"
+    for i, f in enumerate(reversed(favs), 1):
+        text += f"{i}. <b>{f.get('title', 'Блюдо')}</b> — {f.get('calories', 0)} ккал (Б:{f.get('protein', 0)} Ж:{f.get('fat', 0)} У:{f.get('carbs', 0)})\n"
+        if i >= 15: # Показываем только последние 15, чтобы сообщение не было слишком длинным
+            break
+            
+    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="↩️ Назад в профиль", callback_data="back_to_profile")]
+    ]))
+
+@dp.callback_query(F.data == "back_to_profile")
+async def back_to_profile_handler(callback: CallbackQuery, state: FSMContext):
+    # Возвращаем пользователя обратно в профиль
+    callback.message.from_user = callback.from_user
+    await profile_handler(callback.message, state)
+    # Удаляем старое сообщение с базой, чтобы не мусорить
+    try: await callback.message.delete()
+    except Exception: pass
 
 @dp.callback_query(F.data == "toggle_family_mode")
 async def toggle_family_mode_handler(callback: CallbackQuery):
@@ -1115,11 +1142,18 @@ async def food_edit_handler(callback: CallbackQuery, state: FSMContext):
 @dp.message(FoodStates.correcting)
 async def correcting_handler(message: Message, state: FSMContext):
     data = await state.get_data()
-    res = await ask_ai(prompt=f"Старое: {data.get('recognized_food')}\nИсправление: {message.text}\nВыдай новое.", model=AI_MODEL)
+    prompt = (
+        f"Старое описание блюда: {data.get('recognized_food')}\n"
+        f"Пользователь просит исправить: {message.text}\n\n"
+        "Выдай НОВОЕ описание блюда, учитывая исправления. "
+        "КРИТИЧЕСКИ ВАЖНО: НИКАКИХ ПРИВЕТСТВИЙ! Не пиши 'Привет', 'Конечно' и т.д. "
+        "Начинай сразу с описания блюда и КБЖУ. Используй HTML-теги."
+    )
+    res = await ask_ai(prompt=prompt, model=AI_MODEL)
     await state.update_data(recognized_food=res)
     await state.set_state(None)
     await message.answer(f"{clean_html_tags(res)}\n\nТеперь всё верно?", reply_markup=food_keyboard())
-
+    
 @dp.callback_query(F.data == "meal_save")
 async def save_meal_handler(callback: CallbackQuery, state: FSMContext):
     food = (await state.get_data()).get("calculated_food", {})
