@@ -108,17 +108,16 @@ def test_clean_html_tags_security(raw_html, expected):
 
 
 PROGRESS_BAR_TESTS = [
-    (0, 2000, "г", "↳ <i>Нужно ещё: 2000 г</i>"),
-    (1500, 2000, "ккал", "↳ <i>Осталось: 500 ккал</i>"),
-    (2000, 2000, "г", "↳ <i>Норма ровно выполнена ✅</i>"),
-    (2500, 2000, "ккал", "↳ <i>Перебор: 500 ккал</i>"),
-    (0, 0, "г", "↳ <i>Норма не задана</i>"),
+    (0, 2000, "🥩", "⚪", "⚪⚪⚪⚪⚪⚪⚪"),
+    (1000, 2000, "⚡", "⚪", "⚡⚡⚡⚡⚪⚪⚪"),
+    (2000, 2000, "🥑", "⚪", "🥑🥑🥑🥑🥑🥑🥑"),
+    (2500, 2000, "⚡", "⚪", "⚡⚡⚡⚡⚡⚡⚡"),
+    (0, 0, "🥩", "⚪", "⚪⚪⚪⚪⚪⚪⚪"),
 ]
 
-@pytest.mark.parametrize("curr,target,unit,expected", PROGRESS_BAR_TESTS)
-def test_progress_bar_display(curr, target, unit, expected):
-    assert make_progress_bar(curr, target, unit) == expected
-
+@pytest.mark.parametrize("curr,target,active,inactive,expected", PROGRESS_BAR_TESTS)
+def test_progress_bar_display(curr, target, active, inactive, expected):
+    assert make_progress_bar(curr, target, active, inactive) == expected
 
 # =========================================================
 # БЛОК 4: ИНТЕГРАЦИОННЫЕ ТЕСТЫ TELEGRAM (15+ ТЕСТОВ)
