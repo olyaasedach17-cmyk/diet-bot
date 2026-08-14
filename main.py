@@ -512,19 +512,32 @@ async def fridge_handler(message: Message, state: FSMContext):
 async def workout_menu_handler(message: Message, state: FSMContext):
     await state.clear()
     if not await check_user_access(message.from_user.id): return await send_paywall(message)
+    
     user = await get_user_profile(message.from_user.id)
     fav_w = user.get("favorite_workout_name") if user else None
-    intro = f"🏋️ <b>ТРЕНИРОВКИ</b>\n<i>Часто выбираешь: {fav_w}</i>" if fav_w else "🏋️ <b>ТРЕНИРОВКИ И АКТИВНОСТЬ</b>\nВыбери программу:"
+    gender = user.get("gender", "F") if user else "F" # По умолчанию женские, если пол не найден
     
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🏠 Дома · Новичок 🟢", callback_data="gen_workout_home_easy")],
-        [InlineKeyboardButton(text="🏠 Дома · Продвинутый 🔴", callback_data="gen_workout_home_hard")],
-        [InlineKeyboardButton(text="🏋️ В зале · Новичок 🟢", callback_data="gen_workout_gym_easy")],
-        [InlineKeyboardButton(text="🏋️ В зале · Продвинутый 🔴", callback_data="gen_workout_gym_hard")],
-        [InlineKeyboardButton(text="👣 Своя активность / Шаги", callback_data="enter_custom_activity")]
-    ])
+    intro = f"🏋️ <b>ТРЕНИРОВКИ</b>\n<i>Часто выбираешь: {fav_w}</i>" if fav_w else "🏋️ <b>ТРЕНИРОВКИ И АКТИВНОСТЬ</b>\nВыбери фокус-зону на сегодня:"
+    
+    # Формируем кнопки в зависимости от пола!
+    if gender == "M":
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🛡 Широкая спина и плечи", callback_data="gen_workout_gym_back")],
+            [InlineKeyboardButton(text="💪 Мощные руки и грудь", callback_data="gen_workout_gym_arms")],
+            [InlineKeyboardButton(text="🧱 Рельефный пресс и кор", callback_data="gen_workout_home_abs")],
+            [InlineKeyboardButton(text="🏋️ База (Всё тело)", callback_data="gen_workout_gym_full")],
+            [InlineKeyboardButton(text="👣 Своя активность / Шаги", callback_data="enter_custom_activity")]
+        ])
+    else:
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🍑 Ягодицы и бёдра", callback_data="gen_workout_home_glutes")],
+            [InlineKeyboardButton(text="🧘‍♀️ Здоровая спина и осанка", callback_data="gen_workout_home_back")],
+            [InlineKeyboardButton(text="👙 Плоский живот и талия", callback_data="gen_workout_home_abs")],
+            [InlineKeyboardButton(text="🔥 Жиросжигание (Всё тело)", callback_data="gen_workout_home_full")],
+            [InlineKeyboardButton(text="👣 Своя активность / Шаги", callback_data="enter_custom_activity")]
+        ])
+        
     await message.answer(intro, reply_markup=kb)
-
 @dp.callback_query(F.data == "enter_custom_activity")
 async def enter_activity_callback(callback: CallbackQuery, state: FSMContext):
     await state.set_state(ActivityStates.waiting_for_activity)
@@ -533,26 +546,42 @@ async def enter_activity_callback(callback: CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data.startswith("gen_workout_"))
 async def generate_workout_callback(callback: CallbackQuery):
     p = callback.data.replace("gen_workout_", "").split("_")
-    loc = "дома без оборудования" if p[0] == "home" else "в тренажёрном зале"
-    is_hard = p[1] == "hard"
-    target_time, lvl = ("60 мин", "для продвинутого") if is_hard else ("20 мин", "для новичка (база)")
-    user = await get_user_profile(callback.from_user.id)
+    # p[0] - loc (home/gym), p[1] - focus (glutes, back, arms, abs, full)
     
-    await callback.message.edit_text(f"⏳ Подбираю программу на {target_time}...")
+    loc = "дома (с ковриком и легким весом)" if p[0] == "home" else "в тренажёрном зале"
+    
+    # Переводим фокус на понятный нейросети язык
+    focus_map = {
+        "glutes": "ягодицы и ноги (акцент на низ)",
+        "back": "здоровая спина и осанка (укрепление мышечного корсета)",
+        "arms": "руки, плечи и грудь (верх тела)",
+        "abs": "пресс, кор и талия",
+        "full": "всё тело (комплексная жиросжигающая тренировка)"
+    }
+    focus_str = focus_map.get(p[1], "общеукрепляющая")
+    
+    user = await get_user_profile(callback.from_user.id)
+    gender_str = "мужчины" if user.get("gender") == "M" else "девушки"
+    
+    await callback.message.edit_text(f"⏳ Подбираю программу на {focus_str}...")
+    
     prompt = (
-        f"Составь тренировку {loc}. Уровень: {lvl}. Цель: '{user.get('goal', 'loss')}'. ВРЕМЯ: {target_time}.\n"
+        f"Составь тренировку {loc} для {gender_str}. Цель пользователя: '{user.get('goal', 'loss')}'. "
+        f"ФОКУС-ЗОНА: {focus_str}.\n"
+        "Тренировка должна занимать около 30-40 минут. "
+        "Обязательно добавь к каждому упражнению краткое описание техники (1 предложение).\n"
         "НЕ ИСПОЛЬЗУЙ таблицы (|) и заголовки (###). Только HTML теги (<b>, <i>).\n"
         "Верни В КОНЦЕ строку: ESTIMATED_KCAL:[число]"
     )
     try:
         raw_resp = await ask_ai(prompt=prompt, model=AI_MODEL)
         kcal_m = re.search(r"ESTIMATED_KCAL:(\d+)", raw_resp)
-        est_kcal = int(kcal_m.group(1)) if kcal_m else (400 if is_hard else 150)
+        est_kcal = int(kcal_m.group(1)) if kcal_m else 250
         clean_t = clean_html_tags(re.sub(r"ESTIMATED_KCAL:\d+", "", raw_resp).strip())
-        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"✅ Выполнил(а) (+{est_kcal} ккал)", callback_data=f"done_workout_{est_kcal}_{p[0]}_{p[1]}")]])
+        
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"✅ Выполнил(а) (+{est_kcal} ккал)", callback_data=f"done_workout_{est_kcal}")]])
         await callback.message.edit_text(clean_t, reply_markup=kb)
     except: await callback.message.edit_text("Не удалось составить тренировку.")
-
 @dp.message(ActivityStates.waiting_for_activity)
 async def process_custom_activity(message: Message, state: FSMContext):
     await state.set_state(None)
