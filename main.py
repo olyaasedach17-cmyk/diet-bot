@@ -1334,7 +1334,7 @@ async def test_evening_handler(message: Message, state: FSMContext):
     await message.answer("✅ Вечерний дайджест отправлен!")
 
 # =========================================================
-# УМНЫЙ ИИ-МАРШРУТИЗАТОР (ОБРАБОТКА ТЕКСТА И ГОЛОСА)
+# УМНЫЙ ИИ-МАРШРУТИЗАТОР И ГОЛОС
 # =========================================================
 async def process_smart_input(text: str, message: Message, state: FSMContext, wait_msg: Message):
     try:
@@ -1372,24 +1372,8 @@ async def voice_handler(message: Message, state: FSMContext):
         text = (await ai_client.audio.transcriptions.create(model="whisper-1", file=buffer)).text
         await wait_msg.edit_text(f"🗣 <b>Вы сказали:</b> «{text}»\n\n⏳ Думаю...")
         await process_smart_input(text, message, state, wait_msg)
-    except Exception: 
+    except Exception:
         await wait_msg.edit_text("Ошибка аудио.")
-
-@dp.message(F.text)
-async def universal_text_handler(message: Message, state: FSMContext):
-    if not await check_user_access(message.from_user.id): return await send_paywall(message)
-    
-    if message.text.startswith('/'): return
-    known_buttons = [
-        "📊 Сегодня", "😋 Вкусняшка", "🥗 Что приготовить", 
-        "🏋️ Тренировка", "💬 Спросить нутрициолога", "⚖️ Вес", 
-        "👤 Профиль", "🎯 Моя норма", "❓ Помощь"
-    ]
-    if message.text in known_buttons: return
-    if await state.get_state(): return
-
-    wait_msg = await message.answer("🤔 Читаю...")
-    await process_smart_input(message.text, message, state, wait_msg)
 
 # =========================================================
 # РЕЦЕПТЫ И ФОТО ЕДЫ
@@ -1477,6 +1461,26 @@ async def save_meal_handler(callback: CallbackQuery, state: FSMContext):
 async def delete_food_handler(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await callback.message.edit_text("🗑 Отменено.")
+    await callback.answer()
+
+# =========================================================
+# УНИВЕРСАЛЬНЫЙ ТЕКСТОВЫЙ ОБРАБОТЧИК (ОБЯЗАТЕЛЬНО ВНИЗУ!)
+# =========================================================
+@dp.message(F.text)
+async def universal_text_handler(message: Message, state: FSMContext):
+    if not await check_user_access(message.from_user.id): return await send_paywall(message)
+    
+    if message.text.startswith('/'): return
+    known_buttons = [
+        "📊 Сегодня", "😋 Вкусняшка", "🥗 Что приготовить", 
+        "🏋️ Тренировка", "💬 Спросить нутрициолога", "⚖️ Вес", 
+        "👤 Профиль", "🎯 Моя норма", "❓ Помощь"
+    ]
+    if message.text in known_buttons: return
+    if await state.get_state(): return
+
+    wait_msg = await message.answer("🤔 Читаю...")
+    await process_smart_input(message.text, message, state, wait_msg)
 
 # =========================================================
 # WEBHOOK ПЛАТЕЖЕЙ BEPAID И HEALTH
