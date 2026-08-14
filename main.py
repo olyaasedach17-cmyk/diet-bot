@@ -791,15 +791,25 @@ async def process_nutritionist_question(message: Message, state: FSMContext):
     wait_msg = await message.answer("🤔 Анализирую твой вопрос и дневник...")
     user = await get_user_profile(message.from_user.id) or {}
     meals = await get_today_meals(message.from_user.id)
-    fam_ctx = "Совет должен подходить для семьи с детьми (без сахара)." if user.get('family_mode') == 'kids' else ""
+    fam_ctx = "Совет должен подходить для семьи с детьми (без добавленного сахара)." if user.get('family_mode') == 'kids' else ""
+    
+    # Новый, строгий промпт, который заставляет ИИ отвечать на вопрос
     prompt = (
-        f"Пользователь спросил: \"{message.text}\".\nКонтекст: Цель {user.get('goal', 'loss')}, Вес {user.get('weight', 70)} кг, "
-        f"Аллергии: {user.get('allergies', 'Нет')}. Съедено сегодня: {', '.join([m.get('title', '') for m in meals])}.\n{fam_ctx}\n"
-        "Дай заботливый ответ нутрициолога. Используй HTML теги. Без списков с решётками (###)."
+        f"Пользователь задал ВОПРОС НУТРИЦИОЛОГУ: \"{message.text}\".\n\n"
+        f"ТВОЯ ГЛАВНАЯ ЗАДАЧА: Дать четкий, экспертный и заботливый ответ ИМЕННО на этот вопрос.\n"
+        f"Дополнительный контекст пользователя (используй ТОЛЬКО если это уместно для ответа):\n"
+        f"- Цель: {user.get('goal', 'loss')}, Вес: {user.get('weight', 70)} кг\n"
+        f"- Аллергии: {user.get('allergies', 'Нет')}\n"
+        f"- Съедено сегодня: {', '.join([m.get('title', '') for m in meals]) if meals else 'Пока ничего'}.\n"
+        f"{fam_ctx}\n\n"
+        "Правила ответа: Будь кратким. Используй HTML теги (<b>, <i>). ЗАПРЕЩЕНО использовать списки с решётками (###) или markdown-звездочками (**)."
     )
-    try: await wait_msg.edit_text(clean_html_tags(await ask_ai(prompt=prompt, model=AI_MODEL)))
-    except Exception: await wait_msg.edit_text("Не удалось получить ответ.")
-
+    
+    try: 
+        answer = await ask_ai(prompt=prompt, model=AI_MODEL)
+        await wait_msg.edit_text(clean_html_tags(answer))
+    except Exception: 
+        await wait_msg.edit_text("Не удалось получить ответ от нутрициолога. Попробуй переформулировать вопрос.")
 @dp.message(F.text == "⚖️ Вес")
 @dp.message(Command("weight"))
 async def weight_handler(message: Message, state: FSMContext):
