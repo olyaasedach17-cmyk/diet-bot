@@ -34,6 +34,7 @@ from main import (
     delete_food_handler,
     admin_broadcast_handler,
     process_smart_input
+    show_favorite_foods_handler
 )
 
 # =========================================================
@@ -254,3 +255,30 @@ async def test_workout_menu_flow(mock_message, mock_callback, mock_state):
         await workout_location_callback(mock_callback)
         male_gym_kb = str(mock_callback.message.edit_text.call_args[1].get('reply_markup').inline_keyboard)
         assert "chest" in male_gym_kb or "back" in male_gym_kb
+
+@pytest.mark.asyncio
+async def test_profile_favorite_foods_button(mock_message, mock_callback, mock_state):
+    # Мокаем профиль пользователя с уже сохраненными любимыми блюдами
+    with patch("main.get_user_profile", new_callable=AsyncMock) as mock_p:
+        mock_p.return_value = {
+            "weight": 65,
+            "favorite_foods": [
+                {"title": "Сметанник без сахара", "calories": 360, "protein": 7, "fat": 29, "carbs": 18}
+            ]
+        }
+        
+        # 1. Проверяем, что в профиле появилась кнопка "Моя база любимых блюд"
+        await profile_handler(mock_message, mock_state)
+        markup = mock_message.answer.call_args[1].get('reply_markup')
+        buttons_str = str(markup.inline_keyboard)
+        assert "show_favorite_foods" in buttons_str, "Кнопка базы блюд не найдена в профиле!"
+
+        # 2. Имитируем нажатие на эту кнопку
+        from main import show_favorite_foods_handler
+        mock_callback.data = "show_favorite_foods"
+        await show_favorite_foods_handler(mock_callback)
+        
+        # 3. Проверяем, что бот вывел список и там есть наш Сметанник
+        response_text = mock_callback.message.edit_text.call_args[0][0]
+        assert "Сметанник без сахара" in response_text
+        assert "360 ккал" in response_text
