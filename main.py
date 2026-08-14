@@ -422,16 +422,11 @@ def food_keyboard() -> InlineKeyboardMarkup:
 def result_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="📊 Сохранить в дневник", callback_data="meal_save")],
+            [
+                InlineKeyboardButton(text="📊 В дневник", callback_data="meal_save"),
+                InlineKeyboardButton(text="❤️ Запомнить", callback_data="food_remember")
+            ],
             [InlineKeyboardButton(text="🗑 Удалить", callback_data="food_delete")],
-        ]
-    )
-
-def activity_result_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="✅ Добавить активность", callback_data="activity_save")],
-            [InlineKeyboardButton(text="🗑 Отмена", callback_data="food_delete")],
         ]
     )
 
@@ -621,6 +616,7 @@ async def toggle_family_mode_handler(callback: CallbackQuery):
     await callback.answer()
 
 @dp.message(F.text == "🎯 Моя норма")
+@dp.message(F.text == "🎯 Моя норма")
 @dp.message(Command("plan"))
 async def plan_handler(message: Message, state: FSMContext):
     await state.clear()
@@ -628,12 +624,30 @@ async def plan_handler(message: Message, state: FSMContext):
     if not user:
         return await message.answer("Сначала нажми /start.")
     
+    # Расчет примерной даты достижения цели
+    weight = float(user.get("weight", 60))
+    target = float(user.get("target_weight", weight))
+    goal = user.get("goal", "maintain")
+    
+    date_str = ""
+    if goal == "loss" and weight > target:
+        kg_to_lose = weight - target
+        weeks_needed = kg_to_lose / 0.6  # Безопасный темп похудения: 600г в неделю
+        target_date = datetime.now() + timedelta(weeks=weeks_needed)
+        date_str = f"🗓 <b>Прогноз цели:</b> к {target_date.strftime('%d.%m.%Y')} (~{int(weeks_needed)} недель)\n\n"
+    elif goal == "gain" and target > weight:
+        kg_to_gain = target - weight
+        weeks_needed = kg_to_gain / 0.4  # Безопасный темп набора: 400г в неделю
+        target_date = datetime.now() + timedelta(weeks=weeks_needed)
+        date_str = f"🗓 <b>Прогноз цели:</b> к {target_date.strftime('%d.%m.%Y')} (~{int(weeks_needed)} недель)\n\n"
+
     await message.answer(
         "🎯 <b>Твоя дневная норма</b>\n━━━━━━━━━━━━━━━━━━━━\n"
         f"🔥 {user.get('calories', 2000)} ккал\n"
         f"🥩 Белки: {user.get('protein', 100)} г\n"
         f"🥑 Жиры: {user.get('fat', 70)} г\n"
-        f"🍚 Углеводы: {user.get('carbs', 200)} г\n"
+        f"🍚 Углеводы: {user.get('carbs', 200)} г\n\n"
+        f"{date_str}"
         f"🛡 Аллергии: {user.get('allergies', 'Нет')}"
     )
 
@@ -1338,6 +1352,8 @@ async def test_evening_handler(message: Message, state: FSMContext):
 # =========================================================
 async def process_smart_input(text: str, message: Message, state: FSMContext, wait_msg: Message):
     try:
+        await bot.send_chat_action(chat_id=message.chat.id, action="typing")
+        
         intent = await ask_ai(prompt=f"Текст: \"{text}\". Ответь 1 словом: ACTIVITY, FOOD или QUESTION.", model=AI_MODEL)
         user = await get_user_profile(message.from_user.id) or {}
         fam_ctx = "Учитывай, что блюдо/совет должен подходить для детей (без сахара, цельные продукты)." if user.get('family_mode') == 'kids' else ""
@@ -1348,7 +1364,19 @@ async def process_smart_input(text: str, message: Message, state: FSMContext, wa
             await wait_msg.edit_text(f"🏃 <b>{res.get('title')}</b>\n🔥 Расход: {res.get('burned_kcal',0)} ккал\n\nДобавить?", reply_markup=activity_result_keyboard())
 
         elif "FOOD" in intent:
-            res = extract_json(await ask_ai(prompt=f"Съел: {text}. Верни JSON: {{\"title\":\"\",\"protein\":0,\"fat\":0,\"carbs\":0,\"comment\":\"\"}}", model=AI_MODEL))
+            favs = user.get("favorite_foods", [])
+            fav_str = ""
+            if favs:
+                fav_list = "\n".join([f"- {f['title']}: {f['calories']} ккал (Б:{f['protein']} Ж:{f['fat']} У:{f['carbs']})" for f in favs])
+                fav_str = f"ВНИМАНИЕ! ЛИЧНАЯ БАЗА ЛЮБИМЫХ БЛЮД ПОЛЬЗОВАТЕЛЯ:\n{fav_list}\nЕсли еда похожа на блюдо из списка, СТРОГО бери цифры оттуда!\n\n"
+
+            prompt = (
+                f"{fav_str}Пользователь съел: \"{text}\".\n"
+                "Рассчитай калории и БЖУ.\n"
+                "Верни строго JSON:\n"
+                "{\n\"title\": \"название\", \"calories\": 0, \"protein\": 0, \"fat\": 0, \"carbs\": 0, \"comment\": \"короткий комментарий без ругани\"\n}"
+            )
+            res = extract_json(await ask_ai(prompt=prompt, model=AI_MODEL))
             await state.update_data(calculated_food=res)
             await wait_msg.edit_text(f"🍽 <b>{res['title']}</b>\n🔥 {res['calories']} ккал (Б:{res['protein']} Ж:{res['fat']} У:{res['carbs']})\n\nВнести?", reply_markup=result_keyboard())
 
@@ -1359,7 +1387,6 @@ async def process_smart_input(text: str, message: Message, state: FSMContext, wa
     except Exception as e:
         logger.error(f"Router error: {e}")
         await wait_msg.edit_text("Не удалось разобрать сообщение.")
-
 @dp.message(F.voice)
 async def voice_handler(message: Message, state: FSMContext):
     if not await check_user_access(message.from_user.id): return await send_paywall(message)
@@ -1395,26 +1422,52 @@ async def recipe_handler(message: Message, state: FSMContext):
 
 @dp.message(F.photo)
 async def photo_handler(message: Message, state: FSMContext):
-    if not await check_user_access(message.from_user.id): return await send_paywall(message)
-    wait_message = await message.answer("👀 Анализирую фотографию...")
+    if not await check_user_access(message.from_user.id): 
+        return await send_paywall(message)
+        
+    wait_message = await message.answer("👀 Анализирую изображение...")
+    await bot.send_chat_action(chat_id=message.chat.id, action="typing")
+    
     try:
         telegram_file = await bot.get_file(message.photo[-1].file_id)
         buffer = io.BytesIO()
         await bot.download_file(telegram_file.file_path, destination=buffer)
         b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
         
-        result = await ask_ai(image_base64=b64, prompt="Определи еду на фото, ингредиенты и вес. Калории пока не считай.", model=AI_VISION_MODEL)
+        prompt = (
+            "Ты нутрициолог-аналитик. Внимательно изучи изображение:\n"
+            "1. Если это ФОТО ЕДЫ — определи блюдо, составные ингредиенты и их примерный вес в граммах.\n"
+            "2. Если это СКРИНШОТ (доставка еды, состав/этикетка продукта, рецепт, меню или скриншот приложения) — "
+            "прочитай текст на картинке, извлеки название блюда/продукта, порцию, граммовку и указанные КБЖУ.\n\n"
+            "Опиши кратко, аппетитно и понятно, что ты видишь или прочитал(а). Сами итоговые калории пока не суммируй."
+        )
+        
+        result = await ask_ai(image_base64=b64, prompt=prompt, model=AI_VISION_MODEL)
         await state.update_data(recognized_food=result, image_base64=b64)
-        await wait_message.edit_text(f"{clean_html_tags(result)}\n\nВсё верно?", reply_markup=food_keyboard())
-    except Exception:
-        await wait_message.edit_text("Не удалось обработать фото.")
+        
+        await wait_message.edit_text(
+            f"{clean_html_tags(result)}\n\nВсё верно?", 
+            reply_markup=food_keyboard()
+        )
+    except Exception as e:
+        logger.error(f"Ошибка анализа фото: {e}")
+        await wait_message.edit_text("Не удалось распознать изображение. Попробуй сделать фото чётче или пришли текстом.")
 
 @dp.callback_query(F.data == "food_correct")
 async def food_correct_handler(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     await callback.message.edit_text("⏳ Рассчитываю КБЖУ...")
+    await bot.send_chat_action(chat_id=callback.message.chat.id, action="typing")
+    
+    user = await get_user_profile(callback.from_user.id) or {}
+    favs = user.get("favorite_foods", [])
+    fav_str = ""
+    if favs:
+        fav_list = "\n".join([f"- {f['title']}: {f['calories']} ккал (Б:{f['protein']} Ж:{f['fat']} У:{f['carbs']})" for f in favs])
+        fav_str = f"ВНИМАНИЕ! ЛИЧНАЯ БАЗА ЛЮБИМЫХ БЛЮД ПОЛЬЗОВАТЕЛЯ:\n{fav_list}\nЕсли еда похожа на что-то из списка, СТРОГО используй эти цифры!\n\n"
+
     try:
-        res = await ask_ai(prompt=f"Рассчитай БЖУ:\n{data.get('recognized_food')}\nВерни JSON: {{\"title\":\"\",\"protein\":0,\"fat\":0,\"carbs\":0,\"comment\":\"\"}}", model=AI_MODEL)
+        res = await ask_ai(prompt=f"{fav_str}Рассчитай БЖУ:\n{data.get('recognized_food')}\nВерни JSON: {{\"title\":\"\",\"protein\":0,\"fat\":0,\"carbs\":0,\"comment\":\"\"}}", model=AI_MODEL)
         food_data = extract_json(res)
         await state.update_data(calculated_food=food_data)
         
@@ -1426,7 +1479,6 @@ async def food_correct_handler(callback: CallbackQuery, state: FSMContext):
         await callback.message.edit_text(txt, reply_markup=result_keyboard())
     except Exception:
         await callback.message.edit_text("Ошибка расчета.")
-
 @dp.callback_query(F.data == "food_edit")
 async def food_edit_handler(callback: CallbackQuery, state: FSMContext):
     await state.set_state(FoodStates.correcting)
@@ -1456,6 +1508,40 @@ async def save_meal_handler(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await callback.message.edit_text("✅ Сохранено в дневник.")
     await send_today(callback.message, user_id=callback.from_user.id)
+@dp.callback_query(F.data == "food_remember")
+async def food_remember_handler(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    food = data.get("calculated_food", {})
+    if not food:
+        return await callback.answer("Ошибка: нет данных блюда.")
+        
+    user_id = callback.from_user.id
+    
+    if db:
+        doc_ref = db.collection('users').document(str(user_id))
+        doc = await asyncio.to_thread(doc_ref.get)
+        favs = doc.to_dict().get('favorite_foods', []) if doc.exists else []
+        
+        # Сохраняем блюдо (храним 20 последних, чтобы не перегружать память ИИ)
+        favs.append({
+            "title": food.get("title", "Еда"),
+            "calories": food.get("calories", 0),
+            "protein": food.get("protein", 0),
+            "fat": food.get("fat", 0),
+            "carbs": food.get("carbs", 0)
+        })
+        favs = favs[-20:] 
+        
+        await asyncio.to_thread(doc_ref.set, {'favorite_foods': favs}, merge=True)
+        
+    await callback.answer(f"❤️ {food.get('title')} сохранено в твою базу!")
+    
+    # Прячем кнопку "Запомнить", оставляем только "В дневник"
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📊 Сохранить в дневник", callback_data="meal_save")],
+        [InlineKeyboardButton(text="🗑 Удалить", callback_data="food_delete")]
+    ])
+    await callback.message.edit_reply_markup(reply_markup=kb)
 
 @dp.callback_query(F.data == "food_delete")
 async def delete_food_handler(callback: CallbackQuery, state: FSMContext):
