@@ -33,8 +33,8 @@ from main import (
     save_meal_handler,
     delete_food_handler,
     admin_broadcast_handler,
-    process_smart_input
-    show_favorite_foods_handler
+    process_smart_input,
+    show_favorite_foods_handler,
 )
 
 # =========================================================
