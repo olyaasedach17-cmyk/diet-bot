@@ -97,7 +97,7 @@ async def test_start_command_new_user(mock_message, mock_state):
         # Проверяем текст первого сообщения (ищем ключевые слова)
         args, kwargs = mock_message.answer.call_args_list[0]
         assert "Привет!" in args[0]
-        assert "Пробный период" in args[0]
+        assert "14 дней бесплатно" in args[0]
         
         # Проверяем, что появилась клавиатура с кнопкой "start_onb"
         args, kwargs = mock_message.answer.call_args_list[1]
