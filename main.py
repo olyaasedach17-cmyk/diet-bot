@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import random
+import uuid
 from datetime import datetime, timedelta, timezone
 
 import aiohttp
@@ -1067,12 +1068,25 @@ async def process_smart_input(text: str, message: Message, state: FSMContext, wa
         elif "FOOD" in intent:
             await wait_msg.edit_text("🧠 <i>Рассчитываю КБЖУ...</i>")
             await bot.send_chat_action(chat_id=message.chat.id, action="typing")
+            
             fav_str = ""
-            if user.get("favorite_foods"): fav_str = f"ВНИМАНИЕ! БАЗА ЛЮБИМЫХ БЛЮД:\n" + "\n".join([f"- {f['title']}: {f['calories']} ккал (Б:{f['protein']})" for f in user.get("favorite_foods")]) + "\nЕсли похоже на список, СТРОГО бери цифры оттуда!\n\n"
-            res = extract_json(await ask_ai(prompt=f"{fav_str}Съедено: \"{text}\".\nРассчитай БЖУ. JSON: {{\"title\":\"\",\"calories\":0,\"protein\":0,\"fat\":0,\"carbs\":0,\"comment\":\"\"}}", model=AI_MODEL))
+            if user.get("favorite_foods"): 
+                fav_items = "\n".join([f"- {f['title']}: {f['calories']} ккал (Б:{f['protein']}, Ж:{f['fat']}, У:{f['carbs']})" for f in user.get("favorite_foods")])
+                fav_str = (
+                    f"ВНИМАНИЕ! БАЗА ЛЮБИМЫХ БЛЮД ПОЛЬЗОВАТЕЛЯ:\n{fav_items}\n"
+                    "ПРАВИЛО 1: Если съедено блюдо ИЗ ЭТОГО СПИСКА — СТРОГО бери эти цифры! Если указан другой вес, пересчитай КБЖУ пропорционально.\n"
+                    "ПРАВИЛО 2: Если съеденного блюда НЕТ в этом списке — считай его как обычно.\n\n"
+                )
+            
+            # ИЗМЕНЕНО: Запрашиваем расширенный JSON с массивом ingredients
+            prompt_json = '{"title":"","calories":0,"protein":0,"fat":0,"carbs":0,"ingredients":[{"name":"название","weight_g":0,"calories":0,"protein":0,"fat":0,"carbs":0}],"comment":""}'
+            res = extract_json(await ask_ai(prompt=f"{fav_str}Съедено: \"{text}\".\nРассчитай БЖУ. Разбей на ингредиенты, если возможно. JSON: {prompt_json}", model=AI_MODEL))
+            
+            # Сохраняем исходный текст пользователя
+            res["original_description"] = text 
             await state.update_data(calculated_food=res)
+            
             await wait_msg.edit_text(f"🍽 <b>{res['title']}</b>\n🔥 {res['calories']} ккал (Б:{res['protein']} Ж:{res['fat']} У:{res['carbs']})\n\nВнести?", reply_markup=result_keyboard())
-
         else:
             await wait_msg.edit_text("📚 <i>Ищу ответ в базе знаний...</i>")
             await bot.send_chat_action(chat_id=message.chat.id, action="typing")
@@ -1138,11 +1152,18 @@ async def food_correct_handler(callback: CallbackQuery, state: FSMContext):
     u = await get_user_profile(callback.from_user.id) or {}
     fav_str = f"ВНИМАНИЕ! БАЗА:\n" + "\n".join([f"- {f['title']}: {f['calories']} ккал" for f in u.get("favorite_foods", [])]) + "\n" if u.get("favorite_foods") else ""
     try:
-        food_data = extract_json(await ask_ai(prompt=f"{fav_str}Рассчитай БЖУ:\n{data.get('recognized_food')}\nJSON: {{\"title\":\"\",\"protein\":0,\"fat\":0,\"carbs\":0,\"comment\":\"\"}}", model=AI_MODEL))
-        await state.update_data(calculated_food=food_data)
-        txt = f"🍽 <b>{food_data['title']}</b>\n━━━━━━━━━\n🔥 <b>{food_data['calories']} ккал</b>\nБ: {food_data['protein']}г | Ж: {food_data['fat']}г | У: {food_data['carbs']}г\n\n💬 <i>{food_data.get('comment','')}</i>\nВнести в дневник?"
+        # ИЗМЕНЕНО: Запрашиваем расширенный JSON с массивом ingredients
+        prompt_json = '{"title":"","calories":0,"protein":0,"fat":0,"carbs":0,"ingredients":[{"name":"название","weight_g":0,"calories":0,"protein":0,"fat":0,"carbs":0}],"comment":""}'
+        res = extract_json(await ask_ai(prompt=f"{fav_str}Рассчитай БЖУ:\n{data.get('recognized_food')}\nРазбей на ингредиенты. JSON: {prompt_json}", model=AI_MODEL))
+        
+        # Для фото исходным описанием будет то, что ИИ увидел на картинке
+        res["original_description"] = data.get('recognized_food', '')
+        await state.update_data(calculated_food=res)
+        
+        txt = f"🍽 <b>{res['title']}</b>\n━━━━━━━━━\n🔥 <b>{res['calories']} ккал</b>\nБ: {res['protein']}г | Ж: {res['fat']}г | У: {res['carbs']}г\n\n💬 <i>{res.get('comment','')}</i>\nВнести в дневник?"
         await callback.message.edit_text(txt, reply_markup=result_keyboard())
-    except Exception: await callback.message.edit_text("Ошибка расчета.")
+    except Exception: 
+        await callback.message.edit_text("Ошибка расчета.")
 
 @dp.callback_query(F.data == "food_edit")
 async def food_edit_handler(callback: CallbackQuery, state: FSMContext):
@@ -1183,15 +1204,48 @@ async def save_meal_handler(callback: CallbackQuery, state: FSMContext):
 async def food_remember_handler(callback: CallbackQuery, state: FSMContext):
     food = (await state.get_data()).get("calculated_food", {})
     if not food: return await callback.answer("Ошибка данных.")
+    
     if db:
-        doc_ref = db.collection('users').document(str(callback.from_user.id))
-        doc = await asyncio.to_thread(doc_ref.get)
-        favs = doc.to_dict().get('favorite_foods', []) if doc.exists else []
-        favs.append({"title": food.get("title", "Еда"), "calories": food.get("calories", 0), "protein": food.get("protein", 0), "fat": food.get("fat", 0), "carbs": food.get("carbs", 0)})
-        await asyncio.to_thread(doc_ref.set, {'favorite_foods': favs[-20:]}, merge=True)
+        try:
+            doc_ref = db.collection('users').document(str(callback.from_user.id))
+            doc = await asyncio.to_thread(doc_ref.get)
+            
+            # 1. ОБРАТНАЯ СОВМЕСТИМОСТЬ: оставляем старый favorite_foods
+            favs = doc.to_dict().get('favorite_foods', []) if doc.exists else []
+            favs.append({
+                "title": food.get("title", "Еда"), 
+                "calories": food.get("calories", 0), 
+                "protein": food.get("protein", 0), 
+                "fat": food.get("fat", 0), 
+                "carbs": food.get("carbs", 0)
+            })
+            await asyncio.to_thread(doc_ref.set, {'favorite_foods': favs[-20:]}, merge=True)
+            
+            # 2. НОВАЯ ЛОГИКА: сохраняем полный шаблон блюда в подколлекцию
+            dish_id = str(uuid.uuid4())
+            dish_data = {
+                "id": dish_id,
+                "title": food.get("title", "Еда"),
+                "calories": food.get("calories", 0),
+                "protein": food.get("protein", 0),
+                "fat": food.get("fat", 0),
+                "carbs": food.get("carbs", 0),
+                "ingredients": food.get("ingredients", []),
+                "original_description": food.get("original_description", ""),
+                "created_at": now_local().isoformat()
+            }
+            dishes_ref = doc_ref.collection('saved_dishes').document(dish_id)
+            await asyncio.to_thread(dishes_ref.set, dish_data)
+            
+        except Exception as e:
+            logger.error(f"Ошибка БД при сохранении блюда: {e}")
+            return await callback.answer("Временная ошибка базы данных. Попробуйте позже.", show_alert=True)
+            
     await callback.answer(f"❤️ {food.get('title')} сохранено в твою базу!")
-    await callback.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📊 Сохранить в дневник", callback_data="meal_save")], [InlineKeyboardButton(text="🗑 Удалить", callback_data="food_delete")]]))
-
+    await callback.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📊 Сохранить в дневник", callback_data="meal_save")], 
+        [InlineKeyboardButton(text="🗑 Удалить", callback_data="food_delete")]
+    ]))
 @dp.callback_query(F.data == "food_delete")
 async def delete_food_handler(callback: CallbackQuery, state: FSMContext):
     await state.clear()
