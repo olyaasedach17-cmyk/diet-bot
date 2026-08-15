@@ -198,6 +198,28 @@ async def send_paywall(message: Message):
         [InlineKeyboardButton(text="6 месяцев — 49 BYN 💎 (Скидка 45%)", callback_data="buy_6_months")],
     ])
     await message.answer(text, reply_markup=kb)
+    @dp.callback_query(F.data.startswith("buy_"))
+async def buy_subscription_handler(callback: CallbackQuery):
+    await callback.message.edit_text("⏳ Генерирую безопасную ссылку для оплаты...")
+    
+    # Определяем тариф и цену (не доверяем юзеру, берем жестко из кода)
+    tariffs = {"buy_1_month": (1, 15.0), "buy_3_months": (3, 29.0), "buy_6_months": (6, 49.0)}
+    months, price = tariffs.get(callback.data, (1, 15.0))
+    
+    url = await create_bepaid_bill(callback.from_user.id, price, months)
+    
+    if url:
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💳 Оплатить подписку", url=url)]
+        ])
+        await callback.message.edit_text(
+            f"Оформление подписки на <b>{months} мес.</b>\nК оплате: <b>{price} BYN</b>\n\n"
+            "<i>После оплаты доступ активируется автоматически.</i>", 
+            reply_markup=kb
+        )
+    else:
+        await callback.message.edit_text("❌ Ошибка создания платежа. Попробуйте позже.")
+# === КОНЕЦ ВСТАВКИ ===
 
 async def set_bot_description(bot_instance: Bot):
     try: await bot_instance.set_my_description("NutriAi — твой нутрициолог в кармане.")
@@ -297,18 +319,42 @@ async def ask_ai(prompt: str, image_base64: str | None = None, model: str | None
 # =========================================================
 async def create_bepaid_bill(user_id: int, amount_byn: float, months: int) -> str | None:
     if not BEPAID_SHOP_ID or not BEPAID_SECRET_KEY: return None
+    
+    # Формируем уникальный Order ID
+    order_id = f"sub_{user_id}_{months}_{int(now_local().timestamp())}_{uuid.uuid4().hex[:6]}"
+    
     payload = {
         "request": {
-            "amount": int(amount_byn * 100), "currency": "BYN", "description": f"Подписка NutriAi на {months} мес.",
+            "amount": int(amount_byn * 100), 
+            "currency": "BYN", 
+            "description": f"Подписка NutriAi на {months} мес.",
             "notification_url": "https://diet-bot-zqpn.onrender.com/webhook/bepaid",
-            "tracking_id": f"sub_{user_id}_{months}_{int(now_local().timestamp())}",
+            "tracking_id": order_id,
         }
     }
+    
     try:
         async with aiohttp.ClientSession() as s:
             async with s.post("https://checkout.bepaid.by/v2/redirect_biller/bills", json=payload, auth=aiohttp.BasicAuth(BEPAID_SHOP_ID, BEPAID_SECRET_KEY)) as r:
-                if r.status in (200, 201): return (await r.json()).get("checkout", {}).get("redirect_url")
-    except Exception: pass
+                if r.status in (200, 201):
+                    data = await r.json()
+                    url = data.get("checkout", {}).get("redirect_url")
+                    
+                    # СОХРАНЯЕМ PENDING СТАТУС В БАЗУ
+                    if url and db:
+                        doc_ref = db.collection('payments').document(order_id)
+                        await asyncio.to_thread(doc_ref.set, {
+                            "user_id": user_id,
+                            "order_id": order_id,
+                            "amount": amount_byn,
+                            "currency": "BYN",
+                            "tariff": months,
+                            "status": "pending",
+                            "created_at": now_local().isoformat()
+                        })
+                    return url
+    except Exception as e:
+        logger.error(f"Ошибка создания счета bePaid: {e}")
     return None
 
 def food_keyboard() -> InlineKeyboardMarkup:
@@ -429,9 +475,16 @@ async def admin_broadcast_handler(message: Message):
 @dp.message(CommandStart())
 async def start_handler(message: Message, state: FSMContext):
     await state.clear()
-    user = await get_user_profile(message.from_user.id)
-    if user: return await message.answer("С возвращением! Пришли фото еды 📸", reply_markup=main_menu)
+    
+    # Ловим UTM-метку из ссылки (например, t.me/bot?start=fb_ad)
+    args = message.text.split(maxsplit=1)
+    utm_source = args[1] if len(args) > 1 else ""
+    await state.update_data(utm_source=utm_source)
 
+    user = await get_user_profile(message.from_user.id)
+    if user: 
+        return await message.answer("С возвращением! Пришли фото еды 📸", reply_markup=main_menu)
+        
     welcome_text = (
         "Привет! Это «NutriAi» — твой нутрициолог в телефоне 🥗\n\n"
         "📸 считаю КБЖУ по фото еды\n📊 веду дневник питания\n🏋️ подбираю тренировки\n🧊 собираю меню\n\n"
@@ -439,7 +492,6 @@ async def start_handler(message: Message, state: FSMContext):
     )
     await message.answer(welcome_text, reply_markup=main_menu)
     await message.answer("Жми кнопку ниже 👇", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🚀 Начать", callback_data="start_onb")]]))
-
 @dp.message(F.text == "📊 Сегодня")
 @dp.message(Command("today"))
 async def today_handler(message: Message, state: FSMContext):
@@ -949,11 +1001,15 @@ async def finish_onboarding(target_msg, state: FSMContext, user_id: int, allergy
     else:
         tu, pu, ca = eu.get("trial_until"), eu.get("premium_until"), eu.get("created_at", now.isoformat())
 
+    # Извлекаем метку из состояния (если есть)
+    utm_source = d.get("utm_source", "")
+
     ud = {
         "user_id": user_id, "gender": d["gender"], "age": d["age"], "height": d["height"], "weight": d["weight"], 
         "goal": d["goal"], "activity": d["activity"], "diet": d.get("diet", "all"), "family_mode": d.get("family_mode", "self"), 
         "allergies": allergy_text, "home_equipment": "bodyweight", "calories": norm["calories"], "protein": norm["protein"], "fat": norm["fat"], "carbs": norm["carbs"],
-        "target_weight": tw, "trial_until": tu, "premium_until": pu, "created_at": ca
+        "target_weight": tw, "trial_until": tu, "premium_until": pu, "created_at": ca,
+        "utm_source": utm_source  # <-- СОХРАНЯЕМ ИСТОЧНИК ТРАФИКА
     }
     await save_user_profile(user_id, ud)
     await state.clear()
@@ -1270,26 +1326,83 @@ async def universal_text_handler(message: Message, state: FSMContext):
 # ЗАПУСК СЕРВЕРА
 # =========================================================
 async def health_handler(request: web.Request): return web.json_response({"status": "ok"})
-async def bepaid_webhook_handler(request: web.Request): return web.Response(text="OK", status=200)
+async def bepaid_webhook_handler(request: web.Request):
+    try:
+        data = await request.json()
+        transaction = data.get("transaction", {})
+        order_id = transaction.get("tracking_id")
+        status = transaction.get("status") # 'successful', 'failed', etc.
+        uid = transaction.get("uid") # Технический ID транзакции bePaid
 
-async def main():
-    app = web.Application()
-    app.router.add_get("/", health_handler)
-    app.router.add_post("/webhook/bepaid", bepaid_webhook_handler)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    await web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", "10000"))).start()
-    
-    await set_bot_description(bot)
-    await set_bot_commands(bot)
-    
-    scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
-    scheduler.add_job(send_morning_digest, "cron", hour=9, minute=0)
-    scheduler.add_job(send_evening_digest, "cron", hour=21, minute=0)
-    scheduler.start()
+        if not order_id or not db:
+            return web.Response(text="OK", status=200)
 
-    await bot.delete_webhook(drop_pending_updates=True)
-    await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+        # 1. Достаем наш ордер из Firebase
+        doc_ref = db.collection('payments').document(str(order_id))
+        doc = await asyncio.to_thread(doc_ref.get)
+        
+        if not doc.exists:
+            return web.Response(text="OK", status=200)
 
-if __name__ == "__main__":
-    asyncio.run(main())
+        order_data = doc.to_dict()
+        
+        # 2. Идемпотентность: если уже оплачено, игнорируем
+        if order_data.get("status") == "paid":
+            return web.Response(text="OK", status=200)
+
+        now_str = now_local().isoformat()
+
+        # 3. Обработка УСПЕШНОГО платежа
+        if status == "successful":
+            # Обновляем статус ордера
+            await asyncio.to_thread(doc_ref.update, {
+                "status": "paid",
+                "confirmed_at": now_str,
+                "transaction_id": uid
+            })
+
+            user_id = order_data.get("user_id")
+            months = order_data.get("tariff", 1)
+            
+            # Аккуратно продлеваем подписку пользователя
+            user_doc_ref = db.collection('users').document(str(user_id))
+            user_doc = await asyncio.to_thread(user_doc_ref.get)
+            
+            now_dt = now_local()
+            current_premium = None
+            if user_doc.exists:
+                try:
+                    p_str = user_doc.to_dict().get("premium_until")
+                    if p_str: current_premium = datetime.fromisoformat(p_str)
+                except Exception: pass
+            
+            # Если подписка еще активна — плюсуем к остатку. Если нет — отсчет от сегодня.
+            if current_premium and current_premium > now_dt:
+                new_premium = current_premium + timedelta(days=30 * months)
+            else:
+                new_premium = now_dt + timedelta(days=30 * months)
+                
+            await asyncio.to_thread(user_doc_ref.set, {"premium_until": new_premium.isoformat()}, merge=True)
+            
+            # Уведомляем пользователя
+            try:
+                await bot.send_message(
+                    chat_id=int(user_id), 
+                    text=f"🎉 <b>Оплата успешно подтверждена!</b>\nТвоя подписка активна до: <b>{new_premium.strftime('%d.%m.%Y')}</b>"
+                )
+            except Exception: pass
+
+        # 4. Обработка ОШИБОК платежа
+        elif status in ["failed", "incomplete", "error"]:
+            await asyncio.to_thread(doc_ref.update, {
+                "status": "failed",
+                "confirmed_at": now_str,
+                "transaction_id": uid
+            })
+
+        return web.Response(text="OK", status=200)
+
+    except Exception as e:
+        logger.error(f"Критическая ошибка Webhook bePaid: {e}")
+        # Всегда возвращаем 200, чтобы платежный шлюз не спамил ретраями
+        return web.Response(text="OK", status=200)
