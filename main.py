@@ -476,8 +476,9 @@ async def admin_broadcast_handler(message: Message):
 async def start_handler(message: Message, state: FSMContext):
     await state.clear()
     
-    # Ловим UTM-метку из ссылки (например, t.me/bot?start=fb_ad)
-    args = message.text.split(maxsplit=1)
+    # Безопасно достаем текст, чтобы тесты не падали, если его вдруг нет
+    text = getattr(message, 'text', None) or ""
+    args = text.split(maxsplit=1)
     utm_source = args[1] if len(args) > 1 else ""
     await state.update_data(utm_source=utm_source)
 
@@ -492,6 +493,7 @@ async def start_handler(message: Message, state: FSMContext):
     )
     await message.answer(welcome_text, reply_markup=main_menu)
     await message.answer("Жми кнопку ниже 👇", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🚀 Начать", callback_data="start_onb")]]))
+
 @dp.message(F.text == "📊 Сегодня")
 @dp.message(Command("today"))
 async def today_handler(message: Message, state: FSMContext):
