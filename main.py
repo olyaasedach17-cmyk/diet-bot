@@ -563,6 +563,48 @@ async def today_handler(message: Message, state: FSMContext):
     await state.clear()
     if not await check_user_access(message.from_user.id): return await send_paywall(message)
     await send_today(message)
+    
+@dp.callback_query(F.data == "analyze_today")
+async def analyze_today_handler(callback: CallbackQuery):
+    user = await get_user_profile(callback.from_user.id)
+    meals = await get_today_meals(callback.from_user.id)
+    
+    if not meals:
+        return await callback.answer("Твой дневник пока пуст! Запиши хотя бы один прием пищи.", show_alert=True)
+        
+    wait_msg = await callback.message.edit_text("⏳ <i>Изучаю твой рацион и готовлю рекомендации...</i>")
+    
+    total_kcal = sum(m.get('calories', 0) for m in meals)
+    total_p = sum(m.get('protein', 0) for m in meals)
+    total_f = sum(m.get('fat', 0) for m in meals)
+    total_c = sum(m.get('carbs', 0) for m in meals)
+    
+    prompt = (
+        f"Пользователь: цель {user.get('goal')}, вес {user.get('weight')} кг.\n"
+        f"Норма: {user.get('calories')} ккал (Б:{user.get('protein')} Ж:{user.get('fat')} У:{user.get('carbs')}).\n"
+        f"Съедено: {total_kcal} ккал (Б:{total_p} Ж:{total_f} У:{total_c}).\n\n"
+        "Выступи в роли заботливого наставника-нутрициолога. Человек НОВИЧОК и не знает, как правильно питаться для своей цели.\n"
+        "Сделай ПОЛНЫЙ анализ его дня по всем показателям (калории, белки, жиры, углеводы).\n"
+        "ГЛАВНОЕ: \n"
+        "1. Объясни простым языком, ЧТО именно пошло не так (если есть сильный перебор или недобор по ЛЮБОМУ из макронутриентов) и ПОЧЕМУ это важно для организма. "
+        "2. ДАЙ КОНКРЕТНЫЙ СОВЕТ: какие 2-3 простых продукта съесть сегодня на ужин или добавить в рацион завтра, чтобы выровнять баланс.\n"
+        "Пиши очень по-доброму, поддерживающе, мотивируй человека не сдаваться и не используй сложных медицинских терминов."
+    )
+    
+    try:
+        analysis = await ask_ai(prompt=prompt)
+        
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Закрыть совет", callback_data="delete_msg")]
+        ])
+        
+        await wait_msg.edit_text(f"📊 <b>Анализ дня от нутрициолога:</b>\n\n{analysis}", reply_markup=kb)
+    except Exception as e:
+        await wait_msg.edit_text("Не удалось проанализировать день. Попробуй позже.")
+
+@dp.callback_query(F.data == "delete_msg")
+async def delete_msg_handler(callback: CallbackQuery):
+    await callback.message.delete()
 
 @dp.message(F.text == "👤 Профиль")
 @dp.message(Command("profile"))
