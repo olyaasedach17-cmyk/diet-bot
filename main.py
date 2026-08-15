@@ -295,9 +295,9 @@ def extract_json(text: str) -> dict:
     data["ingredients"] = data.get("ingredients") or []
     
     return data
-    def calculate_saved_dish_portion(dish: dict, new_weight_g: float) -> dict:
+def calculate_saved_dish_portion(dish: dict, new_weight_g: float) -> dict:
+    # 👇 ВОТ ТУТ СЛЕВА ДОЛЖНЫ БЫТЬ ПРОБЕЛЫ (ОТСТУПЫ) 👇
     """Математически пересчитывает КБЖУ и состав блюда пропорционально новому весу."""
-    # Узнаем исходный вес блюда (сумма ингредиентов). Если его нет, берем за базу 100г.
     original_weight = sum(ing.get('weight_g', 0) for ing in dish.get('ingredients', []))
     if original_weight <= 0:
         original_weight = 100.0 
@@ -310,7 +310,6 @@ def extract_json(text: str) -> dict:
     new_dish['fat'] = int(dish.get('fat', 0) * ratio)
     new_dish['carbs'] = int(dish.get('carbs', 0) * ratio)
     
-    # Пересчитываем каждый ингредиент отдельно
     new_ingredients = []
     for ing in dish.get('ingredients', []):
         new_ing = ing.copy()
