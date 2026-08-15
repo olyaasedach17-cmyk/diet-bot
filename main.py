@@ -98,7 +98,7 @@ main_menu = ReplyKeyboardMarkup(
         [KeyboardButton(text="📊 Сегодня"), KeyboardButton(text="😋 Вкусняшка")],
         [KeyboardButton(text="🥗 Что приготовить"), KeyboardButton(text="🏋️ Тренировка")],
         [KeyboardButton(text="💬 Спросить нутрициолога")],
-        [KeyboardButton(text="⚖️ Вес"), KeyboardButton(text="👤 Профиль"), KeyboardButton(text="🎯 Моя норма")]
+        [KeyboardButton(text="⚖️ Вес"), KeyboardButton(text="👤 Профиль"), KeyboardButton(text="🎯 Моя норма")],
         [KeyboardButton(text="🍽 Мои блюда")]
     ],
     resize_keyboard=True,
