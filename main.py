@@ -99,6 +99,7 @@ main_menu = ReplyKeyboardMarkup(
         [KeyboardButton(text="🥗 Что приготовить"), KeyboardButton(text="🏋️ Тренировка")],
         [KeyboardButton(text="💬 Спросить нутрициолога")],
         [KeyboardButton(text="⚖️ Вес"), KeyboardButton(text="👤 Профиль"), KeyboardButton(text="🎯 Моя норма")]
+        [KeyboardButton(text="🍽 Мои блюда")]
     ],
     resize_keyboard=True,
     input_field_placeholder="Пришли фото еды, наговори голосом...",
@@ -173,6 +174,7 @@ async def save_user_profile(user_id: int, data: dict):
     if db: await asyncio.to_thread(db.collection('users').document(str(user_id)).set, data, merge=True)
 
 async def check_user_access(user_id: int) -> bool:
+    return True
     user = await get_user_profile(user_id)
     if not user: return False
         
@@ -1199,7 +1201,7 @@ async def finish_onboarding(target_msg, state: FSMContext, user_id: int, allergy
     await save_user_profile(user_id, ud)
     await state.clear()
     
-    bonus = "🎁 <b>Активировано 14 дней бесплатно!</b>\nТеперь пришли фото еды 📸" if is_new else "✅ <b>Норма успешно обновлена!</b> 🥗"
+    bonus = "🎁 <b>Активировано 30 дней бесплатно!</b>\nТеперь пришли фото еды 📸" if is_new else "✅ <b>Норма успешно обновлена!</b> 🥗"
     text = (
         "🎯 <b>Твоя норма рассчитана!</b>\n━━━━━━━━━━━━━━━━━━━━\n"
         f"🎯 Цель: {tw} кг\n🔥 {norm['calories']} ккал | Б {norm['protein']}г | Ж {norm['fat']}г | У {norm['carbs']}г\n"
@@ -1380,9 +1382,17 @@ async def photo_handler(message: Message, state: FSMContext):
         await bot.send_chat_action(chat_id=message.chat.id, action="typing")
         
         prompt = (
-            "Изучи изображение:\n1. ФОТО ЕДЫ — определи блюдо, ингредиенты, примерный вес в граммах.\n"
-            "2. СКРИНШОТ — прочитай текст, извлеки название, порцию и КБЖУ.\nОпиши кратко. Калории пока не суммируй."
-        )
+        f"Пользователь: цель {user.get('goal')}, вес {user.get('weight')} кг.\n"
+        f"Норма: {user.get('calories')} ккал (Б:{user.get('protein')} Ж:{user.get('fat')} У:{user.get('carbs')}).\n"
+        f"Съедено: {total_kcal} ккал (Б:{total_p} Ж:{total_f} У:{total_c}).\n\n"
+        "Выступи в роли заботливого наставника-нутрициолога. Человек НОВИЧОК и не знает, как правильно питаться для своей цели.\n"
+        "Сделай ПОЛНЫЙ анализ его дня по всем показателям (калории, белки, жиры, углеводы).\n"
+        "ГЛАВНОЕ: \n"
+        "1. Объясни простым языком, ЧТО именно пошло не так (если есть сильный перебор или недобор по ЛЮБОМУ из макронутриентов) и ПОЧЕМУ это важно для организма. "
+        "(Например: нехватка жиров влияет на гормоны и сухость кожи, перебор простых углеводов задержит воду и вызовет голод, слишком сильный дефицит калорий замедлит обмен веществ).\n"
+        "2. ДАЙ КОНКРЕТНЫЙ СОВЕТ: какие 2-3 простых продукта съесть сегодня на ужин или добавить в рацион завтра, чтобы выровнять баланс.\n"
+        "Пиши очень по-доброму, поддерживающе, мотивируй человека не сдаваться и не используй сложных медицинских терминов."
+    )
         res = await ask_ai(image_base64=b64, prompt=prompt, model=AI_VISION_MODEL)
         await state.update_data(recognized_food=res, image_base64=b64)
         await wait_msg.edit_text(f"{clean_html_tags(res)}\n\nВсё верно?", reply_markup=food_keyboard())
