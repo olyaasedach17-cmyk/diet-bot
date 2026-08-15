@@ -198,7 +198,7 @@ async def send_paywall(message: Message):
         [InlineKeyboardButton(text="6 месяцев — 49 BYN 💎 (Скидка 45%)", callback_data="buy_6_months")],
     ])
     await message.answer(text, reply_markup=kb)
-    @dp.callback_query(F.data.startswith("buy_"))
+@dp.callback_query(F.data.startswith("buy_"))
 async def buy_subscription_handler(callback: CallbackQuery):
     await callback.message.edit_text("⏳ Генерирую безопасную ссылку для оплаты...")
     
