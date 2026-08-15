@@ -402,6 +402,7 @@ async def test_analyze_today_handler(mock_callback_query):
 @pytest.mark.asyncio
 async def test_finish_onboarding_30_days(mock_message, mock_state):
     from main import finish_onboarding
+    from unittest.mock import patch, AsyncMock
     
     mock_state.get_data = AsyncMock(return_value={
         "gender": "F", "age": 25, "height": 165, "weight": 60, "goal": "loss", "activity": "low"
@@ -410,10 +411,12 @@ async def test_finish_onboarding_30_days(mock_message, mock_state):
     with patch("main.db", AsyncMock()), \
          patch("main.calculate_norm", return_value={"calories": 1500, "protein": 100, "fat": 50, "carbs": 150}):
          
-        await finish_onboarding(mock_message, mock_state)
+        # 👇 ИСПРАВЛЕНИЕ ЗДЕСЬ: передаем фейковый ID, текст аллергии и говорим, что это не кнопка (is_cb=False)
+        await finish_onboarding(mock_message, mock_state, user_id=12345, allergy_text="Нет", is_cb=False)
+        
         args, kwargs = mock_message.answer.call_args
         assert "30 дней полного премиум-доступа" in args[0]
-
+             
 @pytest.mark.asyncio
 async def test_workout_time_handler(mock_message):
     from main import workout_time_handler
