@@ -258,17 +258,20 @@ def extract_json(text: str) -> dict:
     text = re.sub(r"\s*```$", "", text)
     match = re.search(r"\{.*\}", text, flags=re.DOTALL)
     if not match: raise ValueError("AI не вернул валидный JSON")
-    
     try: data = json.loads(match.group(0))
     except json.JSONDecodeError: raise ValueError("Ошибка чтения JSON от ИИ")
     
-    try:
-        p, f, c = max(0, float(data.get("protein") or 0)), max(0, float(data.get("fat") or 0)), max(0, float(data.get("carbs") or 0))
+    try: p, f, c = max(0, float(data.get("protein") or 0)), max(0, float(data.get("fat") or 0)), max(0, float(data.get("carbs") or 0))
     except Exception: p, f, c = 0.0, 0.0, 0.0
     
     data["protein"], data["fat"], data["carbs"] = int(p), int(f), int(c)
     data["calories"] = int((p * 4) + (f * 9) + (c * 4))
     if not data.get("title") or not str(data["title"]).strip(): data["title"] = "Приём пищи"
+    
+    # НОВОЕ: Гарантируем, что поле ingredients всегда существует и является списком
+    # (Даже если ИИ прислал старый формат без ингредиентов, бот подставит пустой список [])
+    data["ingredients"] = data.get("ingredients") or []
+    
     return data
 
 async def ask_ai(prompt: str, image_base64: str | None = None, model: str | None = None) -> str:
