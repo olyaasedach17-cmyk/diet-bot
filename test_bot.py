@@ -399,6 +399,9 @@ async def test_analyze_today_handler(mock_callback):
     mock_callback.from_user = MagicMock()
     mock_callback.from_user.id = 12345
     
+    # 👇 ИСПРАВЛЕНИЕ: Учим тест ждать финального текста, а не сообщения с часиками ⏳
+    mock_callback.message.edit_text.return_value = mock_callback.message
+    
     with patch("main.get_user_profile", new_callable=AsyncMock) as mock_profile, \
          patch("main.get_today_meals", new_callable=AsyncMock) as mock_meals, \
          patch("main.ask_ai", new_callable=AsyncMock) as mock_ask_ai:
@@ -438,6 +441,9 @@ async def test_generate_step_workout(mock_callback, mock_state):
     mock_callback.data = "start_w_home_glutes_15"
     mock_callback.from_user = MagicMock()
     mock_callback.from_user.id = 12345
+    
+    # 👇 ИСПРАВЛЕНИЕ: Учим тест ждать финального текста (Шаг 1 из 3) ⏳
+    mock_callback.message.edit_text.return_value = mock_callback.message
     
     with patch("main.get_user_profile", new_callable=AsyncMock) as mock_profile, \
          patch("main.ask_ai", new_callable=AsyncMock) as mock_ask_ai:
