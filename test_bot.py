@@ -297,3 +297,29 @@ async def test_profile_favorite_foods_button(mock_message, mock_callback, mock_s
         response_text = mock_callback.message.edit_text.call_args[0][0]
         assert "Сметанник без сахара" in response_text
         assert "360 ккал" in response_text
+        # =========================================================
+# ТЕСТЫ ОПЛАТЫ
+# =========================================================
+
+@pytest.mark.asyncio
+@patch("main.create_bepaid_bill", new_callable=AsyncMock)
+async def test_buy_subscription_handler(mock_create_bill, mock_callback):
+    """Проверяем, что кнопка тарифа вызывает генерацию ссылки с правильной ценой."""
+    # Эмулируем нажатие на кнопку 3 месяцев
+    mock_callback.data = "buy_3_months"
+    mock_create_bill.return_value = "https://fake-pay-link.com"
+    
+    from main import buy_subscription_handler
+    await buy_subscription_handler(mock_callback)
+    
+    # Проверяем, что функция биллинга вызвалась с нужными параметрами (29 BYN, 3 месяца)
+    mock_create_bill.assert_called_once_with(mock_callback.from_user.id, 29.0, 3)
+    
+    # Проверяем текст сообщения
+    response_text = mock_callback.message.edit_text.call_args[0][0]
+    assert "Оформление подписки на <b>3 мес.</b>" in response_text
+    assert "29.0 BYN" in response_text
+    
+    # Проверяем, что в кнопке лежит правильная ссылка
+    reply_markup = mock_callback.message.edit_text.call_args[1]["reply_markup"]
+    assert reply_markup.inline_keyboard[0][0].url == "https://fake-pay-link.com"
