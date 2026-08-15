@@ -323,3 +323,93 @@ async def test_buy_subscription_handler(mock_create_bill, mock_callback):
     # Проверяем, что в кнопке лежит правильная ссылка
     reply_markup = mock_callback.message.edit_text.call_args[1]["reply_markup"]
     assert reply_markup.inline_keyboard[0][0].url == "https://fake-pay-link.com"
+# =========================================================
+# ТЕСТЫ НОВОГО ФУНКЦИОНАЛА: МОИ БЛЮДА И ОПЛАТА
+# =========================================================
+
+def test_calculate_saved_dish_portion():
+    from main import calculate_saved_dish_portion
+    
+    # Имитируем сохраненное блюдо (исходный вес 200г)
+    dish = {
+        "title": "Курица с гречкой",
+        "calories": 300, "protein": 30, "fat": 5, "carbs": 40,
+        "ingredients": [
+            {"name": "Курица", "weight_g": 100, "calories": 165, "protein": 31, "fat": 3, "carbs": 0},
+            {"name": "Гречка", "weight_g": 100, "calories": 135, "protein": 5, "fat": 2, "carbs": 29}
+        ]
+    }
+    
+    # Пользователь нажал "Изменить граммовку" и ввел 300г (коэффициент 1.5)
+    new_dish = calculate_saved_dish_portion(dish, 300.0)
+    
+    # Проверяем итоговые КБЖУ (300 * 1.5 = 450)
+    assert new_dish["calories"] == 450
+    assert new_dish["protein"] == 45
+    assert new_dish["fat"] == 7  # 5 * 1.5 = 7.5 -> int(7)
+    assert new_dish["carbs"] == 60
+    
+    # Проверяем, что ингредиенты тоже пересчитались пропорционально
+    assert new_dish["ingredients"][0]["weight_g"] == 150
+    assert new_dish["ingredients"][0]["protein"] == 46 # 31 * 1.5 = 46.5 -> int(46)
+
+
+@pytest.mark.asyncio
+async def test_start_handler_with_utm(mock_message, mock_state):
+    from main import start_handler
+    # Пользователь пришел с рекламы Facebook
+    mock_message.text = "/start fb_cpc_promo"
+    mock_message.from_user.id = 12345
+    
+    with patch("main.get_user_profile", return_value=None):
+        await start_handler(mock_message, mock_state)
+        
+        # Проверяем, что бот безопасно разрезал строку и разложил UTM метки в стейт
+        mock_state.update_data.assert_called_with(
+            start_parameter="fb_cpc_promo",
+            utm_source="fb",
+            utm_medium="cpc",
+            utm_campaign="promo"
+        )
+
+
+@pytest.mark.asyncio
+async def test_bepaid_webhook_fraud_protection():
+    from main import bepaid_webhook_handler
+    from aiohttp import web
+    
+    # Мокаем входящий запрос от платежной системы
+    # Кто-то пытается обмануть систему и присылает успешный статус, но сумму 0.01 BYN
+    mock_request = AsyncMock(spec=web.Request)
+    mock_request.json.return_value = {
+        "transaction": {
+            "tracking_id": "sub_123_1",
+            "status": "successful",
+            "amount": 1, # В копейках (1 копейка)
+            "currency": "BYN"
+        }
+    }
+    
+    with patch("main.db") as mock_db:
+        # В нашей базе мы ожидаем оплату тарифа на 15 BYN
+        mock_doc = MagicMock()
+        mock_doc.exists = True
+        mock_doc.to_dict.return_value = {
+            "status": "pending",
+            "amount": 15.0,
+            "currency": "BYN"
+        }
+        
+        # Настраиваем фейковую базу для ответа
+        mock_collection = MagicMock()
+        mock_db.collection.return_value = mock_collection
+        mock_collection.document.return_value = mock_doc
+        
+        # Делаем get() асинхронным (asyncio.to_thread)
+        with patch("asyncio.to_thread", return_value=mock_doc):
+            response = await bepaid_webhook_handler(mock_request)
+            
+            # Бот обязан ответить 200 OK (чтобы вебхук перестал дергать сервер)
+            assert response.status == 200
+            # НО обновление базы со статусом paid НЕ должно было вызваться!
+            mock_doc.update.assert_not_called()
