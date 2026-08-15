@@ -1325,86 +1325,41 @@ async def universal_text_handler(message: Message, state: FSMContext):
     await process_smart_input(message.text, message, state, wait_msg)
 
 # =========================================================
-# ЗАПУСК СЕРВЕРА
+# ЗАПУСК СЕРВЕРА И БОТА
 # =========================================================
-async def health_handler(request: web.Request): return web.json_response({"status": "ok"})
-async def bepaid_webhook_handler(request: web.Request):
-    try:
-        data = await request.json()
-        transaction = data.get("transaction", {})
-        order_id = transaction.get("tracking_id")
-        status = transaction.get("status") # 'successful', 'failed', etc.
-        uid = transaction.get("uid") # Технический ID транзакции bePaid
+async def health_handler(request: web.Request): 
+    return web.json_response({"status": "ok"})
 
-        if not order_id or not db:
-            return web.Response(text="OK", status=200)
+async def bepaid_webhook_handler(request: web.Request): 
+    # Заглушка, чтобы сервер не падал, пока мы не внедрили полную логику
+    return web.Response(text="OK", status=200)
 
-        # 1. Достаем наш ордер из Firebase
-        doc_ref = db.collection('payments').document(str(order_id))
-        doc = await asyncio.to_thread(doc_ref.get)
-        
-        if not doc.exists:
-            return web.Response(text="OK", status=200)
+async def main():
+    # 1. ЗАПУСКАЕМ ВЕБ-СЕРВЕР (ЧТОБЫ RENDER НЕ РУГАЛСЯ)
+    app = web.Application()
+    app.router.add_get("/", health_handler)
+    app.router.add_post("/webhook/bepaid", bepaid_webhook_handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    
+    # Render передает свой порт через переменную окружения PORT
+    port = int(os.getenv("PORT", "10000"))
+    await web.TCPSite(runner, "0.0.0.0", port).start()
+    logger.info(f"🌐 Веб-сервер успешно запущен на порту {port}")
+    
+    # 2. НАСТРАИВАЕМ БОТА
+    await set_bot_description(bot)
+    await set_bot_commands(bot)
+    
+    # 3. ЗАПУСКАЕМ ПЛАНИРОВЩИК (УТРО/ВЕЧЕР)
+    scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
+    scheduler.add_job(send_morning_digest, "cron", hour=9, minute=0)
+    scheduler.add_job(send_evening_digest, "cron", hour=21, minute=0)
+    scheduler.start()
 
-        order_data = doc.to_dict()
-        
-        # 2. Идемпотентность: если уже оплачено, игнорируем
-        if order_data.get("status") == "paid":
-            return web.Response(text="OK", status=200)
+    # 4. ЗАПУСКАЕМ САМОГО БОТА
+    await bot.delete_webhook(drop_pending_updates=True)
+    await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
 
-        now_str = now_local().isoformat()
-
-        # 3. Обработка УСПЕШНОГО платежа
-        if status == "successful":
-            # Обновляем статус ордера
-            await asyncio.to_thread(doc_ref.update, {
-                "status": "paid",
-                "confirmed_at": now_str,
-                "transaction_id": uid
-            })
-
-            user_id = order_data.get("user_id")
-            months = order_data.get("tariff", 1)
-            
-            # Аккуратно продлеваем подписку пользователя
-            user_doc_ref = db.collection('users').document(str(user_id))
-            user_doc = await asyncio.to_thread(user_doc_ref.get)
-            
-            now_dt = now_local()
-            current_premium = None
-            if user_doc.exists:
-                try:
-                    p_str = user_doc.to_dict().get("premium_until")
-                    if p_str: current_premium = datetime.fromisoformat(p_str)
-                except Exception: pass
-            
-            # Если подписка еще активна — плюсуем к остатку. Если нет — отсчет от сегодня.
-            if current_premium and current_premium > now_dt:
-                new_premium = current_premium + timedelta(days=30 * months)
-            else:
-                new_premium = now_dt + timedelta(days=30 * months)
-                
-            await asyncio.to_thread(user_doc_ref.set, {"premium_until": new_premium.isoformat()}, merge=True)
-            
-            # Уведомляем пользователя
-            try:
-                await bot.send_message(
-                    chat_id=int(user_id), 
-                    text=f"🎉 <b>Оплата успешно подтверждена!</b>\nТвоя подписка активна до: <b>{new_premium.strftime('%d.%m.%Y')}</b>"
-                )
-            except Exception: pass
-
-        # 4. Обработка ОШИБОК платежа
-        elif status in ["failed", "incomplete", "error"]:
-            await asyncio.to_thread(doc_ref.update, {
-                "status": "failed",
-                "confirmed_at": now_str,
-                "transaction_id": uid
-            })
-
-        return web.Response(text="OK", status=200)
-
-    except Exception as e:
-        logger.error(f"Критическая ошибка Webhook bePaid: {e}")
-        # Всегда возвращаем 200, чтобы платежный шлюз не спамил ретраями
-        return web.Response(text="OK", status=200)
+if __name__ == "__main__":
+    asyncio.run(main())
