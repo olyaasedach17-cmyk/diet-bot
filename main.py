@@ -182,8 +182,10 @@ async def check_user_access(user_id: int) -> bool:
         if not d_val: return None
         if isinstance(d_val, str):
             try: 
+                # Читаем дату
                 dt = datetime.fromisoformat(d_val.replace('Z', '+00:00'))
-                # Если дата без часового пояса, принудительно добавляем текущий, чтобы Python не ругался
+                # 🌟 ВОТ СПАСЕНИЕ ДЛЯ КРИСТИНЫ 🌟
+                # Если дата "голая" (как в базе), добавляем ей часовой пояс!
                 if dt.tzinfo is None:
                     dt = dt.replace(tzinfo=now.tzinfo)
                 return dt
