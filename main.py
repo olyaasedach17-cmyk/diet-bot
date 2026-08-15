@@ -116,6 +116,9 @@ class Onboarding(StatesGroup):
 class FoodStates(StatesGroup):
     correcting = State()
     waiting_for_recipe = State()
+
+class WorkoutStates(StatesGroup):
+    active = State()
     
 class MyMealsStates(StatesGroup):
     waiting_for_new_grams = State()
@@ -905,10 +908,32 @@ async def enter_activity_callback(callback: CallbackQuery, state: FSMContext):
     await state.set_state(ActivityStates.waiting_for_activity)
     await callback.message.edit_text("👣 <b>Введи свою активность:</b>\nНапример: <i>«Прошла 12 000 шагов»</i> или <i>«Плавание 45 минут»</i>.")
 
+# Добавляем стейт в начало файла (если еще не добавляла)
+class WorkoutStates(StatesGroup):
+    active = State()
+
+# === ЭТОТ БЛОК ВСТАВЛЯЕМ ВМЕСТО СТАРОЙ generate_workout_callback ===
+
+# 1. Когда выбрали зону, спрашиваем время!
 @dp.callback_query(F.data.startswith("gen_workout_"))
-async def generate_workout_callback(callback: CallbackQuery):
+async def ask_workout_time_callback(callback: CallbackQuery):
+    # Достаем, что выбрал пользователь (например, home и glutes)
     p = callback.data.replace("gen_workout_", "").split("_")
     loc_type, focus_type = p[0], p[1]
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⚡️ 15 минут", callback_data=f"start_w_{loc_type}_{focus_type}_15")],
+        [InlineKeyboardButton(text="⏱ 30 минут", callback_data=f"start_w_{loc_type}_{focus_type}_30")],
+        [InlineKeyboardButton(text="🔥 45 минут", callback_data=f"start_w_{loc_type}_{focus_type}_45")],
+        [InlineKeyboardButton(text="↩️ Назад", callback_data=f"workout_loc_{loc_type}")]
+    ])
+    await callback.message.edit_text("⏱ <b>Сколько времени у тебя есть на эту тренировку?</b>", reply_markup=kb)
+
+# 2. Генерируем пошаговую тренировку
+@dp.callback_query(F.data.startswith("start_w_"))
+async def generate_step_workout(callback: CallbackQuery, state: FSMContext):
+    p = callback.data.replace("start_w_", "").split("_")
+    loc_type, focus_type, minutes = p[0], p[1], p[2]
     
     user = await get_user_profile(callback.from_user.id)
     gender_str = "мужчины" if user.get("gender") == "M" else "девушки"
@@ -916,7 +941,7 @@ async def generate_workout_callback(callback: CallbackQuery):
     user_equip = user.get("home_equipment", "bodyweight")
     
     equip_desc_map = {
-        "bodyweight": "собственный вес тела и коврик (БЕЗ дополнительного инвентаря)",
+        "bodyweight": "собственный вес тела и коврик (БЕЗ инвентаря)",
         "bands": "фитнес-резинки (эспандеры) и коврик",
         "dumbbells": "гантели (или гири) и коврик",
         "all": "гантели, фитнес-резинки и коврик"
@@ -924,49 +949,86 @@ async def generate_workout_callback(callback: CallbackQuery):
     
     if loc_type == "home":
         equip_text = equip_desc_map.get(user_equip, "собственный вес")
-        loc_desc = f"дома, используя ТОЛЬКО следующий инвентарь: {equip_text}"
+        loc_desc = f"дома, инвентарь: {equip_text}"
     else:
-        loc_desc = "в тренажёрном зале (с использованием блочных тренажёров, штанг и гантелей)"
+        loc_desc = "в тренажёрном зале (с использованием тренажёров и свободных весов)"
     
     focus_map = {
-        "glutes": "ягодицы и ноги (акцент на форму и тонус)",
-        "back": "спина и королевская осанка (укрепление мышечного корсета)",
-        "abs": "мышцы пресса, кора и талии",
-        "chest": "грудные мышцы и руки",
-        "legs": "мышцы ног и выносливость",
-        "arms": "руки, плечи и грудь",
-        "full": "всё тело (комплексная жиросжигающая/силовая тренировка)"
+        "glutes": "ягодицы и ноги (акцент на форму)",
+        "back": "спина и осанка (укрепление корсета)",
+        "abs": "пресс, кор и талия",
+        "chest": "грудь и руки",
+        "legs": "ноги и выносливость",
+        "full": "всё тело (комплексная тренировка)"
     }
     focus_desc = focus_map.get(focus_type, "всё тело")
     
-    await callback.message.edit_text(f"⏳ Составляю идеальную программу: <b>{focus_desc}</b>...")
+    wait_msg = await callback.message.edit_text(f"⏳ <i>Составляю идеальный план на {minutes} мин: {focus_desc}...</i>")
     
     prompt = (
         f"Ты топ-фитнес тренер. Составь эффективную тренировку {loc_desc} для {gender_str}. "
         f"Цель клиента: '{user_goal}'. ФОКУС: {focus_desc}.\n"
-        "Тренировка на 30-40 минут (4-5 упражнений). К каждому упражнению дай 1 понятное предложение с техникой безопасности.\n"
-        "НЕ используй Markdown-таблицы (|). Используй только чистые HTML-теги (<b>, <i>).\n"
-        "В САМОМ КОНЦЕ ответа обязательно напиши строчку строго в формате: ESTIMATED_KCAL:[число]"
+        f"Продолжительность: ровно {minutes} минут.\n"
+        "ОЧЕНЬ ВАЖНО: Раздели КАЖДОЕ упражнение (включая разминку и заминку) символами ||| \n\n"
+        "Формат каждой карточки:\n"
+        "Название (сколько раз/секунд делать)\n"
+        "Подробная техника (как выполнять, как дышать, куда смотреть). Пиши бодро и с эмодзи.\n\n"
+        "Никакого лишнего текста, только карточки упражнений, разделенные |||"
     )
     
     try:
-        raw_resp = await ask_ai(prompt=prompt, model=AI_MODEL)
-        kcal_m = re.search(r"ESTIMATED_KCAL:(\d+)", raw_resp)
-        est_kcal = int(kcal_m.group(1)) if kcal_m else 250
-        clean_text = clean_html_tags(re.sub(r"ESTIMATED_KCAL:\d+", "", raw_resp).strip())
+        res = await ask_ai(prompt=prompt) 
+        exercises = [clean_html_tags(e.strip()) for e in res.split("|||") if len(e.strip()) > 10]
+        
+        if not exercises:
+            return await wait_msg.edit_text("Ой, что-то пошло не так. Попробуй еще раз!")
+
+        await state.set_state(WorkoutStates.active)
+        await state.update_data(exercises=exercises, current_index=0, total_kcal=int(minutes)*6)
         
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=f"✅ Выполнил(а) (+{est_kcal} ккал)", callback_data=f"done_workout_{est_kcal}")],
-            [InlineKeyboardButton(text="↩️ Другая тренировка", callback_data=f"workout_loc_{loc_type}")]
+            [InlineKeyboardButton(text="✅ Выполнил(а)", callback_data="workout_next")],
+            [InlineKeyboardButton(text="❌ Закрыть", callback_data="workout_stop")]
         ])
-        await callback.message.edit_text(clean_text, reply_markup=kb)
-    except Exception:
-        await callback.message.edit_text(
-            "Не удалось сгенерировать тренировку. Попробуй ещё раз.", 
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="↩️ Назад", callback_data=f"workout_loc_{loc_type}")]
-            ])
-        )
+        
+        await wait_msg.edit_text(f"🔥 <b>Тренировка: {focus_map.get(focus_type, 'Всё тело')} ({minutes} мин)</b>\n\nШаг 1 из {len(exercises)}:\n\n{exercises[0]}", reply_markup=kb)
+    except Exception as e:
+        await wait_msg.edit_text("Ошибка генерации. Попробуй позже.")
+
+# === ЭТОТ БЛОК ВСТАВЛЯЕМ ВМЕСТО СТАРОЙ done_workout_callback ===
+
+@dp.callback_query(F.data == "workout_next", WorkoutStates.active)
+async def next_exercise_handler(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    exercises = data.get("exercises", [])
+    current_index = data.get("current_index", 0) + 1
+    
+    if current_index >= len(exercises):
+        kcal = data.get("total_kcal", 150)
+        await state.clear()
+        
+        # Записываем в дневник и профиль
+        doc_id = f"{callback.from_user.id}_{today_str()}"
+        if db:
+            await save_user_profile(callback.from_user.id, {"favorite_workout_name": "Недавняя Тренировка"})
+            doc_ref = db.collection('diaries').document(doc_id)
+            doc = await asyncio.to_thread(doc_ref.get)
+            await asyncio.to_thread(doc_ref.set, {'burned_kcal': (doc.to_dict().get('burned_kcal', 0) if doc.exists else 0) + kcal}, merge=True)
+            
+        await callback.message.edit_text(f"🏆 <b>Тренировка завершена!</b>\nТы супер! Сожжено примерно {kcal} ккал (зачтено в дневник).")
+        return await send_today(callback.message, user_id=callback.from_user.id)
+    
+    await state.update_data(current_index=current_index)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Выполнил(а)", callback_data="workout_next")],
+        [InlineKeyboardButton(text="❌ Закрыть", callback_data="workout_stop")]
+    ])
+    await callback.message.edit_text(f"Шаг {current_index + 1} из {len(exercises)}:\n\n{exercises[current_index]}", reply_markup=kb)
+
+@dp.callback_query(F.data == "workout_stop", WorkoutStates.active)
+async def stop_exercise_handler(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.edit_text("🛑 Тренировка прервана. Ничего страшного, продолжим в следующий раз!")
 
 @dp.message(ActivityStates.waiting_for_activity)
 async def process_custom_activity(message: Message, state: FSMContext):
