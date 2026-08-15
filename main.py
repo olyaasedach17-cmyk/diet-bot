@@ -115,6 +115,10 @@ class Onboarding(StatesGroup):
 class FoodStates(StatesGroup):
     correcting = State()
     waiting_for_recipe = State()
+    
+class MyMealsStates(StatesGroup):
+    waiting_for_new_grams = State()
+    waiting_for_new_composition = State()
 
 class WeightStates(StatesGroup): waiting_for_weight = State()
 class ActivityStates(StatesGroup): waiting_for_activity = State()
