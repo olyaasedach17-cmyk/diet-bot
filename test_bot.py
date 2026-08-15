@@ -158,11 +158,18 @@ async def test_start_flow_existing_user(mock_message, mock_state):
 
 @pytest.mark.asyncio
 async def test_today_empty_diary(mock_message, mock_state):
+    # Добавляем patch для check_user_access
     with patch("main.get_user_profile", new_callable=AsyncMock) as mock_p, \
          patch("main.get_today_meals", new_callable=AsyncMock) as mock_m, \
+         patch("main.check_user_access", new_callable=AsyncMock) as mock_access, \
          patch("main.db", None): 
+        
         mock_p.return_value = {"calories": 1800, "protein": 120, "fat": 60, "carbs": 180}
         mock_m.return_value = []
+        
+        # Говорим боту: "Пропусти его, у него есть доступ!"
+        mock_access.return_value = True 
+        
         await today_handler(mock_message, mock_state)
         assert "Пока пусто" in mock_message.answer.call_args[0][0]
 
@@ -357,26 +364,24 @@ def test_calculate_saved_dish_portion():
 @pytest.mark.asyncio
 async def test_start_handler_with_utm(mock_message, mock_state):
     from main import start_handler
-    from unittest.mock import MagicMock
+    from unittest.mock import MagicMock, AsyncMock, patch # <- Добавили AsyncMock и patch сюда
     
-    # Пользователь пришел с рекламы Facebook
     mock_message.text = "/start fb_cpc_promo"
-    
-    # ИСПРАВЛЕНИЕ: Подменяем пользователя целиком, чтобы обойти защиту "frozen instance"
     mock_message.from_user = MagicMock()
     mock_message.from_user.id = 12345
+    
+    # ИСПРАВЛЕНИЕ 1: Делаем функцию умным моком, чтобы следить за ней
+    mock_state.update_data = AsyncMock()
     
     with patch("main.get_user_profile", return_value=None):
         await start_handler(mock_message, mock_state)
         
-        # Проверяем, что бот безопасно разрезал строку и разложил UTM метки в стейт
         mock_state.update_data.assert_called_with(
             start_parameter="fb_cpc_promo",
             utm_source="fb",
             utm_medium="cpc",
             utm_campaign="promo"
         )
-
 
 @pytest.mark.asyncio
 async def test_bepaid_webhook_fraud_protection():
