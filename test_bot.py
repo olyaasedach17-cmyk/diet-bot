@@ -399,52 +399,64 @@ async def test_analyze_today_handler(mock_callback_query):
         assert "Анализ дня от нутрициолога" in args[0]
         assert "Твой анализ: добавь больше белка на ужин!" in args[0]
 
+# =========================================================
+# ИСПРАВЛЕННЫЕ ТЕСТЫ (Анкета 30 дней и Гибридные тренировки)
+# =========================================================
+
 @pytest.mark.asyncio
 async def test_finish_onboarding_30_days(mock_message, mock_state):
     from main import finish_onboarding
-    from unittest.mock import patch, AsyncMock
+    from unittest.mock import patch, MagicMock # <- Заменили на MagicMock для базы
     
     mock_state.get_data = AsyncMock(return_value={
         "gender": "F", "age": 25, "height": 165, "weight": 60, "goal": "loss", "activity": "low"
     })
     
-    with patch("main.db", AsyncMock()), \
+    # Используем MagicMock, чтобы цепочка db.collection().document() работала синхронно
+    with patch("main.db", MagicMock()), \
          patch("main.calculate_norm", return_value={"calories": 1500, "protein": 100, "fat": 50, "carbs": 150}):
          
-        # 👇 ИСПРАВЛЕНИЕ ЗДЕСЬ: передаем фейковый ID, текст аллергии и говорим, что это не кнопка (is_cb=False)
         await finish_onboarding(mock_message, mock_state, user_id=12345, allergy_text="Нет", is_cb=False)
         
         args, kwargs = mock_message.answer.call_args
         assert "30 дней полного премиум-доступа" in args[0]
-             
+
+
 @pytest.mark.asyncio
-async def test_workout_time_handler(mock_message):
-    from main import workout_time_handler
+async def test_ask_workout_time_callback(mock_callback_query):
+    from main import ask_workout_time_callback
     
-    mock_message.text = "🏋️ Тренировка"
+    # Имитируем, что юзер выбрал тренировку дома на ягодицы
+    mock_callback_query.data = "gen_workout_home_glutes"
     
-    with patch("main.check_user_access", new_callable=AsyncMock, return_value=True):
-        await workout_time_handler(mock_message)
-        
-        args, kwargs = mock_message.answer.call_args
-        assert "Сколько времени у тебя сейчас есть" in args[0]
-        assert kwargs["reply_markup"] is not None
+    await ask_workout_time_callback(mock_callback_query)
+    
+    # Проверяем, что бот спросил про время и выдал правильные кнопки
+    args, kwargs = mock_callback_query.message.edit_text.call_args
+    assert "Сколько времени у тебя есть" in args[0]
+    assert "start_w_home_glutes_15" in str(kwargs['reply_markup'])
+
 
 @pytest.mark.asyncio
 async def test_generate_step_workout(mock_callback_query, mock_state):
     from main import generate_step_workout, WorkoutStates
+    from unittest.mock import patch, AsyncMock
     
-    mock_callback_query.data = "workout_time_15"
+    # Имитируем, что юзер выбрал 15 минут
+    mock_callback_query.data = "start_w_home_glutes_15"
     mock_callback_query.from_user.id = 12345
     
     with patch("main.get_user_profile", new_callable=AsyncMock) as mock_profile, \
          patch("main.ask_ai", new_callable=AsyncMock) as mock_ask_ai:
          
-        mock_profile.return_value = {"weight": 60, "goal": "loss", "home_equipment": "нет"}
+        mock_profile.return_value = {"weight": 60, "goal": "loss", "home_equipment": "dumbbells"}
+        
+        # Имитируем ответ ИИ
         mock_ask_ai.return_value = "Разминка (5 мин)\nКрутим руками|||Приседания (15 раз)\nСпина прямая|||Отжимания (10 раз)\nДыши ровно"
         
         await generate_step_workout(mock_callback_query, mock_state)
         
+        # Проверяем, что бот выдал первый шаг
         args, kwargs = mock_callback_query.message.edit_text.call_args
         assert "Шаг 1 из 3" in args[0]
         assert "Разминка (5 мин)" in args[0]
