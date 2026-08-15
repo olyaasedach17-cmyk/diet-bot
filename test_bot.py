@@ -21,8 +21,6 @@ from main import (
     plan_handler,
     treat_button_handler,
     fridge_handler,
-    workout_menu_handler,
-    workout_location_callback,
     ask_nutritionist_handler,
     weight_handler,
     help_handler,
@@ -158,7 +156,6 @@ async def test_start_flow_existing_user(mock_message, mock_state):
 
 @pytest.mark.asyncio
 async def test_today_empty_diary(mock_message, mock_state):
-    # Добавляем patch для check_user_access
     with patch("main.get_user_profile", new_callable=AsyncMock) as mock_p, \
          patch("main.get_today_meals", new_callable=AsyncMock) as mock_m, \
          patch("main.check_user_access", new_callable=AsyncMock) as mock_access, \
@@ -166,8 +163,6 @@ async def test_today_empty_diary(mock_message, mock_state):
         
         mock_p.return_value = {"calories": 1800, "protein": 120, "fat": 60, "carbs": 180}
         mock_m.return_value = []
-        
-        # Говорим боту: "Пропусти его, у него есть доступ!"
         mock_access.return_value = True 
         
         await today_handler(mock_message, mock_state)
@@ -194,7 +189,6 @@ async def test_treat_flow(mock_message, mock_state):
 
 @pytest.mark.asyncio
 async def test_remember_favorite_food(mock_callback, mock_state):
-    # Мокаем расширенные данные, которые теперь возвращает ИИ
     await mock_state.update_data(calculated_food={
         "title": "Сырники", "calories": 300, "protein": 20, "fat": 10, "carbs": 25,
         "ingredients": [{"name": "Творог", "weight_g": 150, "calories": 150}],
@@ -206,8 +200,6 @@ async def test_remember_favorite_food(mock_callback, mock_state):
     doc_mock.to_dict.return_value = {}
     
     with patch("main.db") as mock_db:
-        # Настраиваем фейковую базу данных для прохождения новой цепочки:
-        # db.collection('users').document().collection('saved_dishes').document().set()
         mock_user_doc = MagicMock()
         mock_db.collection().document.return_value = mock_user_doc
         mock_user_doc.get.return_value = doc_mock
@@ -216,10 +208,7 @@ async def test_remember_favorite_food(mock_callback, mock_state):
         mock_user_doc.collection().document.return_value = mock_dish_doc
         
         await food_remember_handler(mock_callback, mock_state)
-        
-        # Проверяем, что бот ответил успешно
         assert "сохранено в твою базу" in mock_callback.answer.call_args[0][0]
-        # Проверяем, что блюдо реально попыталось сохраниться в новую подколлекцию
         mock_dish_doc.set.assert_called()
 
 @pytest.mark.asyncio
@@ -250,37 +239,13 @@ async def test_admin_broadcast(mock_message):
         await admin_broadcast_handler(mock_message)
         assert "Рассылка завершена" in mock_message.answer.call_args[0][0]
 
-@pytest.mark.asyncio
-async def test_workout_menu_flow(mock_message, mock_callback, mock_state):
-    with patch("main.get_user_profile", new_callable=AsyncMock) as mock_p, \
-         patch("main.check_user_access", new_callable=AsyncMock) as mock_acc:
-        mock_acc.return_value = True
-        
-        # 1. Меню выбора локации
-        await workout_menu_handler(mock_message, mock_state)
-        markup = mock_message.answer.call_args[1].get('reply_markup')
-        buttons_str = str(markup.inline_keyboard)
-        assert "workout_loc_home" in buttons_str
-        assert "workout_loc_gym" in buttons_str
-
-        # 2. Выбор "Дома" для ДЕВУШКИ с инвентарем
-        mock_p.return_value = {"gender": "F", "home_equipment": "bands"}
-        mock_callback.data = "workout_loc_home"
-        await workout_location_callback(mock_callback)
-        female_home_kb = str(mock_callback.message.edit_text.call_args[1].get('reply_markup').inline_keyboard)
-        assert "glutes" in female_home_kb
-        assert "choose_equipment_menu" in female_home_kb
-
-        # 3. Выбор "В зале" для ПАРНЯ
-        mock_p.return_value = {"gender": "M"}
-        mock_callback.data = "workout_loc_gym"
-        await workout_location_callback(mock_callback)
-        male_gym_kb = str(mock_callback.message.edit_text.call_args[1].get('reply_markup').inline_keyboard)
-        assert "chest" in male_gym_kb or "back" in male_gym_kb
+# --- СТАРЫЙ ТЕСТ ТРЕНИРОВОК ЗАКОММЕНТИРОВАН ---
+# @pytest.mark.asyncio
+# async def test_workout_menu_flow(mock_message, mock_callback, mock_state):
+#    ... старый код ...
 
 @pytest.mark.asyncio
 async def test_profile_favorite_foods_button(mock_message, mock_callback, mock_state):
-    # Мокаем профиль пользователя с уже сохраненными любимыми блюдами
     with patch("main.get_user_profile", new_callable=AsyncMock) as mock_p:
         mock_p.return_value = {
             "weight": 65,
@@ -289,47 +254,40 @@ async def test_profile_favorite_foods_button(mock_message, mock_callback, mock_s
             ]
         }
         
-        # 1. Проверяем, что в профиле появилась кнопка "Моя база любимых блюд"
         await profile_handler(mock_message, mock_state)
         markup = mock_message.answer.call_args[1].get('reply_markup')
         buttons_str = str(markup.inline_keyboard)
         assert "show_favorite_foods" in buttons_str, "Кнопка базы блюд не найдена в профиле!"
 
-        # 2. Имитируем нажатие на эту кнопку
         from main import show_favorite_foods_handler
         mock_callback.data = "show_favorite_foods"
         await show_favorite_foods_handler(mock_callback)
         
-        # 3. Проверяем, что бот вывел список и там есть наш Сметанник
         response_text = mock_callback.message.edit_text.call_args[0][0]
         assert "Сметанник без сахара" in response_text
         assert "360 ккал" in response_text
-        # =========================================================
+
+# =========================================================
 # ТЕСТЫ ОПЛАТЫ
 # =========================================================
 
 @pytest.mark.asyncio
 @patch("main.create_bepaid_bill", new_callable=AsyncMock)
 async def test_buy_subscription_handler(mock_create_bill, mock_callback):
-    """Проверяем, что кнопка тарифа вызывает генерацию ссылки с правильной ценой."""
-    # Эмулируем нажатие на кнопку 3 месяцев
     mock_callback.data = "buy_3_months"
     mock_create_bill.return_value = "https://fake-pay-link.com"
     
     from main import buy_subscription_handler
     await buy_subscription_handler(mock_callback)
     
-    # Проверяем, что функция биллинга вызвалась с нужными параметрами (29 BYN, 3 месяца)
     mock_create_bill.assert_called_once_with(mock_callback.from_user.id, 29.0, 3)
-    
-    # Проверяем текст сообщения
     response_text = mock_callback.message.edit_text.call_args[0][0]
     assert "Оформление подписки на <b>3 мес.</b>" in response_text
     assert "29.0 BYN" in response_text
     
-    # Проверяем, что в кнопке лежит правильная ссылка
     reply_markup = mock_callback.message.edit_text.call_args[1]["reply_markup"]
     assert reply_markup.inline_keyboard[0][0].url == "https://fake-pay-link.com"
+
 # =========================================================
 # ТЕСТЫ НОВОГО ФУНКЦИОНАЛА: МОИ БЛЮДА И ОПЛАТА
 # =========================================================
@@ -337,7 +295,6 @@ async def test_buy_subscription_handler(mock_create_bill, mock_callback):
 def test_calculate_saved_dish_portion():
     from main import calculate_saved_dish_portion
     
-    # Имитируем сохраненное блюдо (исходный вес 200г)
     dish = {
         "title": "Курица с гречкой",
         "calories": 300, "protein": 30, "fat": 5, "carbs": 40,
@@ -347,30 +304,24 @@ def test_calculate_saved_dish_portion():
         ]
     }
     
-    # Пользователь нажал "Изменить граммовку" и ввел 300г (коэффициент 1.5)
     new_dish = calculate_saved_dish_portion(dish, 300.0)
-    
-    # Проверяем итоговые КБЖУ (300 * 1.5 = 450)
     assert new_dish["calories"] == 450
     assert new_dish["protein"] == 45
-    assert new_dish["fat"] == 7  # 5 * 1.5 = 7.5 -> int(7)
+    assert new_dish["fat"] == 7 
     assert new_dish["carbs"] == 60
-    
-    # Проверяем, что ингредиенты тоже пересчитались пропорционально
     assert new_dish["ingredients"][0]["weight_g"] == 150
-    assert new_dish["ingredients"][0]["protein"] == 46 # 31 * 1.5 = 46.5 -> int(46)
+    assert new_dish["ingredients"][0]["protein"] == 46 
 
 
 @pytest.mark.asyncio
 async def test_start_handler_with_utm(mock_message, mock_state):
     from main import start_handler
-    from unittest.mock import MagicMock, AsyncMock, patch # <- Добавили AsyncMock и patch сюда
+    from unittest.mock import MagicMock, AsyncMock, patch 
     
     mock_message.text = "/start fb_cpc_promo"
     mock_message.from_user = MagicMock()
     mock_message.from_user.id = 12345
     
-    # ИСПРАВЛЕНИЕ 1: Делаем функцию умным моком, чтобы следить за ней
     mock_state.update_data = AsyncMock()
     
     with patch("main.get_user_profile", return_value=None):
@@ -388,20 +339,17 @@ async def test_bepaid_webhook_fraud_protection():
     from main import bepaid_webhook_handler
     from aiohttp import web
     
-    # Мокаем входящий запрос от платежной системы
-    # Кто-то пытается обмануть систему и присылает успешный статус, но сумму 0.01 BYN
     mock_request = AsyncMock(spec=web.Request)
     mock_request.json.return_value = {
         "transaction": {
             "tracking_id": "sub_123_1",
             "status": "successful",
-            "amount": 1, # В копейках (1 копейка)
+            "amount": 1, 
             "currency": "BYN"
         }
     }
     
     with patch("main.db") as mock_db:
-        # В нашей базе мы ожидаем оплату тарифа на 15 BYN
         mock_doc = MagicMock()
         mock_doc.exists = True
         mock_doc.to_dict.return_value = {
@@ -410,16 +358,90 @@ async def test_bepaid_webhook_fraud_protection():
             "currency": "BYN"
         }
         
-        # Настраиваем фейковую базу для ответа
         mock_collection = MagicMock()
         mock_db.collection.return_value = mock_collection
         mock_collection.document.return_value = mock_doc
         
-        # Делаем get() асинхронным (asyncio.to_thread)
         with patch("asyncio.to_thread", return_value=mock_doc):
             response = await bepaid_webhook_handler(mock_request)
             
-            # Бот обязан ответить 200 OK (чтобы вебхук перестал дергать сервер)
             assert response.status == 200
-            # НО обновление базы со статусом paid НЕ должно было вызваться!
             mock_doc.update.assert_not_called()
+
+# =========================================================
+# НОВЫЕ ТЕСТЫ: АНАЛИЗ ДНЯ, 30 ДНЕЙ, ПОШАГОВЫЕ ТРЕНИРОВКИ
+# =========================================================
+
+@pytest.mark.asyncio
+async def test_analyze_today_handler(mock_callback_query):
+    from main import analyze_today_handler
+    
+    mock_callback_query.data = "analyze_today"
+    mock_callback_query.from_user.id = 12345
+    
+    with patch("main.get_user_profile", new_callable=AsyncMock) as mock_profile, \
+         patch("main.get_today_meals", new_callable=AsyncMock) as mock_meals, \
+         patch("main.ask_ai", new_callable=AsyncMock) as mock_ask_ai:
+         
+        mock_profile.return_value = {
+            "calories": 2000, "protein": 150, "fat": 70, "carbs": 200, 
+            "weight": 70, "goal": "loss"
+        }
+        mock_meals.return_value = [
+            {"calories": 500, "protein": 30, "fat": 20, "carbs": 50}
+        ]
+        mock_ask_ai.return_value = "Твой анализ: добавь больше белка на ужин!"
+        
+        await analyze_today_handler(mock_callback_query)
+        
+        mock_ask_ai.assert_called_once()
+        args, kwargs = mock_callback_query.message.edit_text.call_args
+        assert "Анализ дня от нутрициолога" in args[0]
+        assert "Твой анализ: добавь больше белка на ужин!" in args[0]
+
+@pytest.mark.asyncio
+async def test_finish_onboarding_30_days(mock_message, mock_state):
+    from main import finish_onboarding
+    
+    mock_state.get_data = AsyncMock(return_value={
+        "gender": "F", "age": 25, "height": 165, "weight": 60, "goal": "loss", "activity": "low"
+    })
+    
+    with patch("main.db", AsyncMock()), \
+         patch("main.calculate_norm", return_value={"calories": 1500, "protein": 100, "fat": 50, "carbs": 150}):
+         
+        await finish_onboarding(mock_message, mock_state)
+        args, kwargs = mock_message.answer.call_args
+        assert "30 дней полного премиум-доступа" in args[0]
+
+@pytest.mark.asyncio
+async def test_workout_time_handler(mock_message):
+    from main import workout_time_handler
+    
+    mock_message.text = "🏋️ Тренировка"
+    
+    with patch("main.check_user_access", new_callable=AsyncMock, return_value=True):
+        await workout_time_handler(mock_message)
+        
+        args, kwargs = mock_message.answer.call_args
+        assert "Сколько времени у тебя сейчас есть" in args[0]
+        assert kwargs["reply_markup"] is not None
+
+@pytest.mark.asyncio
+async def test_generate_step_workout(mock_callback_query, mock_state):
+    from main import generate_step_workout, WorkoutStates
+    
+    mock_callback_query.data = "workout_time_15"
+    mock_callback_query.from_user.id = 12345
+    
+    with patch("main.get_user_profile", new_callable=AsyncMock) as mock_profile, \
+         patch("main.ask_ai", new_callable=AsyncMock) as mock_ask_ai:
+         
+        mock_profile.return_value = {"weight": 60, "goal": "loss", "home_equipment": "нет"}
+        mock_ask_ai.return_value = "Разминка (5 мин)\nКрутим руками|||Приседания (15 раз)\nСпина прямая|||Отжимания (10 раз)\nДыши ровно"
+        
+        await generate_step_workout(mock_callback_query, mock_state)
+        
+        args, kwargs = mock_callback_query.message.edit_text.call_args
+        assert "Шаг 1 из 3" in args[0]
+        assert "Разминка (5 мин)" in args[0]
