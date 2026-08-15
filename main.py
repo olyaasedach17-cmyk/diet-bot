@@ -295,6 +295,34 @@ def extract_json(text: str) -> dict:
     data["ingredients"] = data.get("ingredients") or []
     
     return data
+    def calculate_saved_dish_portion(dish: dict, new_weight_g: float) -> dict:
+    """Математически пересчитывает КБЖУ и состав блюда пропорционально новому весу."""
+    # Узнаем исходный вес блюда (сумма ингредиентов). Если его нет, берем за базу 100г.
+    original_weight = sum(ing.get('weight_g', 0) for ing in dish.get('ingredients', []))
+    if original_weight <= 0:
+        original_weight = 100.0 
+        
+    ratio = new_weight_g / original_weight
+    
+    new_dish = dish.copy()
+    new_dish['calories'] = int(dish.get('calories', 0) * ratio)
+    new_dish['protein'] = int(dish.get('protein', 0) * ratio)
+    new_dish['fat'] = int(dish.get('fat', 0) * ratio)
+    new_dish['carbs'] = int(dish.get('carbs', 0) * ratio)
+    
+    # Пересчитываем каждый ингредиент отдельно
+    new_ingredients = []
+    for ing in dish.get('ingredients', []):
+        new_ing = ing.copy()
+        new_ing['weight_g'] = int(ing.get('weight_g', 0) * ratio)
+        new_ing['calories'] = int(ing.get('calories', 0) * ratio)
+        new_ing['protein'] = int(ing.get('protein', 0) * ratio)
+        new_ing['fat'] = int(ing.get('fat', 0) * ratio)
+        new_ing['carbs'] = int(ing.get('carbs', 0) * ratio)
+        new_ingredients.append(new_ing)
+        
+    new_dish['ingredients'] = new_ingredients
+    return new_dish
 
 async def ask_ai(prompt: str, image_base64: str | None = None, model: str | None = None) -> str:
     used_model = model or AI_MODEL
@@ -320,7 +348,6 @@ async def ask_ai(prompt: str, image_base64: str | None = None, model: str | None
 async def create_bepaid_bill(user_id: int, amount_byn: float, months: int) -> str | None:
     if not BEPAID_SHOP_ID or not BEPAID_SECRET_KEY: return None
     
-    # Формируем уникальный Order ID
     order_id = f"sub_{user_id}_{months}_{int(now_local().timestamp())}_{uuid.uuid4().hex[:6]}"
     
     payload = {
@@ -340,17 +367,22 @@ async def create_bepaid_bill(user_id: int, amount_byn: float, months: int) -> st
                     data = await r.json()
                     url = data.get("checkout", {}).get("redirect_url")
                     
-                    # СОХРАНЯЕМ PENDING СТАТУС В БАЗУ
                     if url and db:
+                        # Берем UTM-метки юзера, чтобы связать платеж с источником
+                        user = await get_user_profile(user_id) or {}
+                        
                         doc_ref = db.collection('payments').document(order_id)
                         await asyncio.to_thread(doc_ref.set, {
-                            "user_id": user_id,
                             "order_id": order_id,
+                            "user_id": user_id,
                             "amount": amount_byn,
                             "currency": "BYN",
                             "tariff": months,
                             "status": "pending",
-                            "created_at": now_local().isoformat()
+                            "payment_provider": "bepaid",
+                            "created_at": now_local().isoformat(),
+                            "utm_source": user.get("utm_source", "organic"),
+                            "utm_campaign": user.get("utm_campaign", "")
                         })
                     return url
     except Exception as e:
@@ -476,13 +508,24 @@ async def admin_broadcast_handler(message: Message):
 async def start_handler(message: Message, state: FSMContext):
     await state.clear()
     
-    # Безопасно достаем текст, чтобы тесты не падали, если его вдруг нет
+    # Безопасно достаем текст и параметры (например: /start fb_ad_campaign1)
     text = getattr(message, 'text', None) or ""
     args = text.split(maxsplit=1)
-    utm_source = args[1] if len(args) > 1 else ""
-    await state.update_data(utm_source=utm_source)
-
+    start_param = args[1] if len(args) > 1 else ""
+    
     user = await get_user_profile(message.from_user.id)
+    
+    # Если юзер НОВЫЙ, сохраняем параметры в стейт для онбординга
+    if not user:
+        # Примитивный парсинг: если параметры переданы через подчеркивание (fb_cpc_promo)
+        parts = start_param.split('_')
+        await state.update_data(
+            start_parameter=start_param,
+            utm_source=parts[0] if len(parts) > 0 else "organic",
+            utm_medium=parts[1] if len(parts) > 1 else "",
+            utm_campaign=parts[2] if len(parts) > 2 else ""
+        )
+    
     if user: 
         return await message.answer("С возвращением! Пришли фото еды 📸", reply_markup=main_menu)
         
@@ -634,6 +677,127 @@ async def fridge_handler(message: Message, state: FSMContext):
     if not await check_user_access(message.from_user.id): return await send_paywall(message)
     await state.set_state(FoodStates.waiting_for_recipe)
     await message.answer("Напиши продукты через запятую, и я соберу идеальный рецепт:")
+@dp.message(F.text == "🍽 Мои блюда")
+async def my_meals_list_handler(message: Message):
+    if not await check_user_access(message.from_user.id): return await send_paywall(message)
+    if not db: return await message.answer("Ошибка подключения к базе данных.")
+    
+    # Достаем блюда из новой коллекции пользователя
+    dishes_ref = db.collection('users').document(str(message.from_user.id)).collection('saved_dishes')
+    docs = await asyncio.to_thread(dishes_ref.limit(30).get)
+    
+    if not docs:
+        return await message.answer("У тебя пока нет сохранённых блюд.\n\nНажимай кнопку <b>«❤️ Запомнить»</b> при добавлении еды, и она появится здесь!")
+        
+    kb_buttons = []
+    for doc in docs:
+        d = doc.to_dict()
+        kb_buttons.append([InlineKeyboardButton(text=f"🍽 {d.get('title', 'Блюдо')}", callback_data=f"my_meal_view_{doc.id}")])
+        
+    await message.answer("🍽 <b>ТВОИ СОХРАНЁННЫЕ БЛЮДА</b>\nВыбери блюдо из списка:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_buttons))
+@dp.callback_query(F.data.startswith("my_meal_view_"))
+async def my_meal_view_handler(callback: CallbackQuery, state: FSMContext):
+    dish_id = callback.data.replace("my_meal_view_", "")
+    dish_ref = db.collection('users').document(str(callback.from_user.id)).collection('saved_dishes').document(dish_id)
+    doc = await asyncio.to_thread(dish_ref.get)
+    
+    if not doc.exists:
+        return await callback.answer("Блюдо не найдено", show_alert=True)
+        
+    dish = doc.to_dict()
+    dish['id'] = dish_id
+    await state.update_data(current_viewed_dish=dish)  # Сохраняем эталон в память
+    
+    text = f"🍽 <b>{dish.get('title')}</b>\n━━━━━━━━━━━━━━━━━━━━\n"
+    text += f"🔥 {dish.get('calories')} ккал | Б: {dish.get('protein')}г | Ж: {dish.get('fat')}г | У: {dish.get('carbs')}г\n\n"
+    
+    ingredients = dish.get('ingredients', [])
+    if ingredients:
+        text += "<b>Ингредиенты:</b>\n"
+        for ing in ingredients:
+            text += f"• {ing.get('name', 'Ингредиент')} — {ing.get('weight_g', 0)} г\n"
+            
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📊 Съесть (в дневник)", callback_data=f"my_meal_eat_{dish_id}")],
+        [InlineKeyboardButton(text="⚖️ Изменить граммовку", callback_data=f"my_meal_edit_{dish_id}")],
+        [InlineKeyboardButton(text="🗑 Удалить", callback_data=f"my_meal_del_{dish_id}")],
+        [InlineKeyboardButton(text="↩️ К списку блюд", callback_data="my_meals_back")]
+    ])
+    
+    await callback.message.edit_text(text, reply_markup=kb)
+
+@dp.callback_query(F.data == "my_meals_back")
+async def my_meals_back_handler(callback: CallbackQuery):
+    callback.message.from_user = callback.from_user
+    await my_meals_list_handler(callback.message)
+    try: await callback.message.delete()
+    except Exception: pass
+
+@dp.callback_query(F.data.startswith("my_meal_eat_"))
+async def my_meal_eat_handler(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    dish = data.get("current_viewed_dish")
+    if not dish: return await callback.answer("Ошибка: блюдо не найдено в памяти")
+    
+    # Сохраняем в дневник через старую проверенную функцию (никакого дублирования!)
+    await add_meal_to_today(callback.from_user.id, {
+        "title": dish.get("title", "Еда"), 
+        "calories": dish.get("calories", 0), 
+        "protein": dish.get("protein", 0), 
+        "fat": dish.get("fat", 0), 
+        "carbs": dish.get("carbs", 0), 
+        "created_at": now_local().isoformat()
+    })
+    await callback.message.edit_text(f"✅ <b>{dish.get('title')}</b> добавлено в дневник!")
+    await send_today(callback.message, user_id=callback.from_user.id)
+
+@dp.callback_query(F.data.startswith("my_meal_edit_"))
+async def my_meal_edit_handler(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(MyMealsStates.waiting_for_new_grams)
+    await callback.message.edit_text("⚖️ <b>Введи новый общий вес блюда (в граммах):</b>\nНапример: <i>250</i>\n\nЯ математически пересчитаю КБЖУ и состав.")
+
+@dp.message(MyMealsStates.waiting_for_new_grams)
+async def my_meal_new_grams_message(message: Message, state: FSMContext):
+    data = await state.get_data()
+    dish = data.get("current_viewed_dish")
+    if not dish: 
+        await state.set_state(None)
+        return await message.answer("Ошибка: блюдо не найдено")
+        
+    nums = re.findall(r"\d+(?:[.,]\d+)?", message.text)
+    if not nums:
+        return await message.answer("Пожалуйста, напиши вес числом (например: 250).")
+        
+    new_weight = float(nums[0].replace(",", "."))
+    await state.set_state(None)
+    
+    # 🌟 ТА САМАЯ МАТЕМАТИКА 🌟
+    new_dish = calculate_saved_dish_portion(dish, new_weight)
+    await state.update_data(current_viewed_dish=new_dish) # Запоминаем для кнопки "Съесть"
+    
+    text = f"⚖️ <b>ПЕРЕСЧИТАНО НА {int(new_weight)} г</b>\n━━━━━━━━━━━━━━━━━━━━\n"
+    text += f"🍽 <b>{new_dish.get('title')}</b>\n"
+    text += f"🔥 {new_dish.get('calories')} ккал | Б: {new_dish.get('protein')}г | Ж: {new_dish.get('fat')}г | У: {new_dish.get('carbs')}г\n\n"
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📊 Съесть новую порцию", callback_data=f"my_meal_eat_{dish.get('id')}")],
+        [InlineKeyboardButton(text="↩️ Отмена", callback_data=f"my_meal_view_{dish.get('id')}")]
+    ])
+    await message.answer(text, reply_markup=kb)
+
+@dp.callback_query(F.data.startswith("my_meal_del_"))
+async def my_meal_delete_handler(callback: CallbackQuery):
+    dish_id = callback.data.replace("my_meal_del_", "")
+    if db:
+        dish_ref = db.collection('users').document(str(callback.from_user.id)).collection('saved_dishes').document(dish_id)
+        await asyncio.to_thread(dish_ref.delete)
+        
+    await callback.answer("🗑 Блюдо удалено", show_alert=True)
+    # Возвращаемся к списку
+    callback.message.from_user = callback.from_user
+    await my_meals_list_handler(callback.message)
+    try: await callback.message.delete()
+    except Exception: pass
 
 # =========================================================
 # ТРЕНИРОВКИ (ОПЦИЯ А + ВЫБОР ИНВЕНТАРЯ)
@@ -1011,8 +1175,12 @@ async def finish_onboarding(target_msg, state: FSMContext, user_id: int, allergy
         "goal": d["goal"], "activity": d["activity"], "diet": d.get("diet", "all"), "family_mode": d.get("family_mode", "self"), 
         "allergies": allergy_text, "home_equipment": "bodyweight", "calories": norm["calories"], "protein": norm["protein"], "fat": norm["fat"], "carbs": norm["carbs"],
         "target_weight": tw, "trial_until": tu, "premium_until": pu, "created_at": ca,
-        "utm_source": utm_source  # <-- СОХРАНЯЕМ ИСТОЧНИК ТРАФИКА
-    }
+        "first_touch_at": now_local().isoformat(),
+        "start_parameter": d.get("start_parameter", ""),
+        "utm_source": d.get("utm_source", "organic"),
+        "utm_medium": d.get("utm_medium", ""),
+        "utm_campaign": d.get("utm_campaign", "")
+    }      
     await save_user_profile(user_id, ud)
     await state.clear()
     
@@ -1330,9 +1498,60 @@ async def universal_text_handler(message: Message, state: FSMContext):
 async def health_handler(request: web.Request): 
     return web.json_response({"status": "ok"})
 
-async def bepaid_webhook_handler(request: web.Request): 
-    # Заглушка, чтобы сервер не падал, пока мы не внедрили полную логику
-    return web.Response(text="OK", status=200)
+async def bepaid_webhook_handler(request: web.Request):
+    try:
+        data = await request.json()
+        transaction = data.get("transaction", {})
+        
+        order_id = transaction.get("tracking_id")
+        status = transaction.get("status")
+        uid = transaction.get("uid") 
+        amount_paid = transaction.get("amount", 0) / 100.0  # У bePaid копейки
+        currency_paid = transaction.get("currency")
+
+        if not order_id or not db:
+            return web.Response(text="OK", status=200)
+
+        doc_ref = db.collection('payments').document(str(order_id))
+        doc = await asyncio.to_thread(doc_ref.get)
+        if not doc.exists: return web.Response(text="OK", status=200)
+
+        order_data = doc.to_dict()
+        
+        # Защита от дублей (Идемпотентность)
+        if order_data.get("status") == "paid":
+            return web.Response(text="OK", status=200)
+
+        # Строгая проверка суммы и валюты (предотвращает подмену данных)
+        expected_amount = order_data.get("amount", 0.0)
+        expected_currency = order_data.get("currency", "BYN")
+        
+        if status == "successful":
+            if amount_paid < expected_amount or currency_paid != expected_currency:
+                logger.error(f"Фрод! Несовпадение суммы: ожидалось {expected_amount} {expected_currency}, получено {amount_paid} {currency_paid}")
+                return web.Response(text="OK", status=200)
+
+            # Сохраняем расширенные данные (paid_at, transaction_id)
+            await asyncio.to_thread(doc_ref.update, {
+                "status": "paid",
+                "paid_at": now_local().isoformat(),
+                "transaction_id": uid
+            })
+
+            # ... (здесь остается твой старый код продления подписки premium_until и уведомления бота) ...
+
+        elif status in ["failed", "incomplete", "error"]:
+            await asyncio.to_thread(doc_ref.update, {
+                "status": "failed",
+                "failed_at": now_local().isoformat(),
+                "transaction_id": uid,
+                "error_message": transaction.get("message", "")
+            })
+
+        return web.Response(text="OK", status=200)
+    except Exception as e:
+        logger.error(f"Критическая ошибка Webhook: {e}")
+        return web.Response(text="OK", status=200)
 
 async def main():
     # 1. ЗАПУСКАЕМ ВЕБ-СЕРВЕР (ЧТОБЫ RENDER НЕ РУГАЛСЯ)
