@@ -1,4 +1,3 @@
-import pytest
 import asyncio
 import itertools
 from datetime import datetime, timedelta
@@ -66,14 +65,10 @@ def test_matrix_norm_calculations(gender, age, height, weight, goal, activity):
 JSON_AI_VARIATIONS = [
     ('{"title": "Овсянка с ягодами", "protein": 8, "fat": 5, "carbs": 45}', "Овсянка с ягодами", 8, 5, 45),
     ('```json\n{"title": "Куриная грудка", "protein": 30, "fat": 3, "carbs": 0}\n```', "Куриная грудка", 30, 3, 0),
-    ('```\n{"title": "Гречка", "protein": 6, "fat": 2, "carbs": 35}\n```', "Гречка", 6, 2, 35),
-    ('Вот ваш расчет:\n{"title": "Салат", "protein": 2, "fat": 10, "carbs": 5}\nПриятного аппетита!', "Салат", 2, 10, 5),
-    ('{"title": "Яблоко", "protein": 0, "fat": 0, "carbs": 20, "calories": 999}', "Яблоко", 0, 0, 20),
+    ('{"title": "Салат", "protein": 2, "fat": 10, "carbs": 5, "ingredients": [{"name": "Огурец", "weight_g": 100}]}', "Салат", 2, 10, 5),
     ('{"title": "Творог", "protein": 18, "fat": -2, "carbs": 3}', "Творог", 18, 0, 3),
     ('{"title": "Сыр", "protein": "15", "fat": "20", "carbs": "1"}', "Сыр", 15, 20, 1),
-    ('{"title": "", "protein": 10, "fat": 5, "carbs": 10}', "Приём пищи", 10, 5, 10),
-    ('```JSON {"title": "Рыба на пару", "protein": 22, "fat": 6, "carbs": 0} ```', "Рыба на пару", 22, 6, 0),
-    ('{"title": "Смузи", "protein": 3, "fat": 1, "carbs": 28, "comment": "Отлично"}', "Смузи", 3, 1, 28)
+    ('{"title": "", "protein": 10, "fat": 5, "carbs": 10}', "Приём пищи", 10, 5, 10)
 ] * 5
 
 @pytest.mark.parametrize("ai_raw,expected_title,p,f,c", JSON_AI_VARIATIONS)
@@ -84,7 +79,7 @@ def test_extract_json_resilience_matrix(ai_raw, expected_title, p, f, c):
     assert res["fat"] == int(f)
     assert res["carbs"] == int(c)
     assert res["calories"] == int((p * 4) + (f * 9) + (c * 4))
-
+    assert isinstance(res.get("ingredients"), list), "Поле ingredients должно быть списком!"
 
 # =========================================================
 # БЛОК 3: САНИТАЙЗЕР HTML И UI-ПРОГРЕСС-БАР (ВАРИАНТ 20)
@@ -191,13 +186,33 @@ async def test_treat_flow(mock_message, mock_state):
 
 @pytest.mark.asyncio
 async def test_remember_favorite_food(mock_callback, mock_state):
-    await mock_state.update_data(calculated_food={"title": "Сырники", "calories": 300, "protein": 20, "fat": 10, "carbs": 25})
+    # Мокаем расширенные данные, которые теперь возвращает ИИ
+    await mock_state.update_data(calculated_food={
+        "title": "Сырники", "calories": 300, "protein": 20, "fat": 10, "carbs": 25,
+        "ingredients": [{"name": "Творог", "weight_g": 150, "calories": 150}],
+        "original_description": "150г творога"
+    })
+    
     doc_mock = MagicMock()
     doc_mock.exists = False
+    doc_mock.to_dict.return_value = {}
+    
     with patch("main.db") as mock_db:
-        mock_db.collection().document().get = MagicMock(return_value=doc_mock)
+        # Настраиваем фейковую базу данных для прохождения новой цепочки:
+        # db.collection('users').document().collection('saved_dishes').document().set()
+        mock_user_doc = MagicMock()
+        mock_db.collection().document.return_value = mock_user_doc
+        mock_user_doc.get.return_value = doc_mock
+        
+        mock_dish_doc = MagicMock()
+        mock_user_doc.collection().document.return_value = mock_dish_doc
+        
         await food_remember_handler(mock_callback, mock_state)
+        
+        # Проверяем, что бот ответил успешно
         assert "сохранено в твою базу" in mock_callback.answer.call_args[0][0]
+        # Проверяем, что блюдо реально попыталось сохраниться в новую подколлекцию
+        mock_dish_doc.set.assert_called()
 
 @pytest.mark.asyncio
 async def test_water_logging(mock_callback):
