@@ -175,22 +175,32 @@ async def save_user_profile(user_id: int, data: dict):
 async def check_user_access(user_id: int) -> bool:
     user = await get_user_profile(user_id)
     if not user: return False
+        
     now = now_local()
     
-    try:
-        if user.get("premium_until") and now < datetime.fromisoformat(user.get("premium_until")): return True
-    except Exception: pass
+    def parse_date(d_val):
+        if not d_val: return None
+        if isinstance(d_val, str):
+            try: 
+                dt = datetime.fromisoformat(d_val.replace('Z', '+00:00'))
+                # Если дата без часового пояса, принудительно добавляем текущий, чтобы Python не ругался
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=now.tzinfo)
+                return dt
+            except Exception: return None
+        return None
 
-    trial_str = user.get("trial_until")
-    if not trial_str:
-        await save_user_profile(user_id, {"trial_until": (now + timedelta(days=14)).isoformat()})
-        return True
+    try:
+        premium_date = parse_date(user.get("premium_until"))
+        if premium_date and premium_date > now: return True
+            
+        trial_date = parse_date(user.get("trial_until"))
+        if trial_date and trial_date > now: return True
+    except Exception as e:
+        logger.error(f"Ошибка сравнения дат: {e}")
+        return False
         
-    try:
-        if now < datetime.fromisoformat(trial_str): return True
-    except Exception: pass
     return False
-
 async def send_paywall(message: Message):
     text = (
         "🔒 <b>Твой бесплатный период завершился.</b>\n\n"
