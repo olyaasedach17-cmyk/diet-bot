@@ -357,8 +357,13 @@ def test_calculate_saved_dish_portion():
 @pytest.mark.asyncio
 async def test_start_handler_with_utm(mock_message, mock_state):
     from main import start_handler
+    from unittest.mock import MagicMock
+    
     # Пользователь пришел с рекламы Facebook
     mock_message.text = "/start fb_cpc_promo"
+    
+    # ИСПРАВЛЕНИЕ: Подменяем пользователя целиком, чтобы обойти защиту "frozen instance"
+    mock_message.from_user = MagicMock()
     mock_message.from_user.id = 12345
     
     with patch("main.get_user_profile", return_value=None):
