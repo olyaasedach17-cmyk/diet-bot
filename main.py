@@ -689,14 +689,64 @@ async def plan_handler(message: Message, state: FSMContext):
         weeks = (target - weight) / 0.4
         date_str = f"🗓 <b>Прогноз цели:</b> к {(now_local() + timedelta(weeks=weeks)).strftime('%d.%m.%Y')} (~{int(weeks)} нед.)\n"
 
+    # Добавляем новую крутую кнопку!
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🧠 Почему именно такие цифры?", callback_data="explain_norm")]
+    ])
+
     await message.answer(
         "🎯 <b>ТВОЯ ДНЕВНАЯ НОРМА</b>\n━━━━━━━━━━━━━━━━━━━━\n"
         f"Текущая цель: <b>{goal_text}</b>\n\n"
         f"🔥 Калории: <b>{user.get('calories', 2000)} ккал</b>\n"
         f"🥩 Белки: {user.get('protein', 100)} г\n🥑 Жиры: {user.get('fat', 70)} г\n🍚 Углеводы: {user.get('carbs', 200)} г\n\n"
         f"{date_str}🛡 Ограничения: {user.get('allergies', 'Нет')}\n━━━━━━━━━━━━━━━━━━━━\n"
-        "<i>Именно этот баланс позволит тебе достичь результата комфортно и без срывов! ✨</i>"
+        "<i>Именно этот баланс позволит тебе достичь результата комфортно и без срывов! ✨</i>",
+        reply_markup=kb
     )
+
+# Обработчик нажатия на кнопку с объяснением
+@dp.callback_query(F.data == "explain_norm")
+async def explain_norm_handler(callback: CallbackQuery):
+    user = await get_user_profile(callback.from_user.id)
+    if not user: return await callback.answer("Профиль не найден")
+
+    wait_msg = await callback.message.edit_text("⏳ <i>Готовлю подробный разбор твоей нормы...</i>")
+
+    gender_text = "мужчины" if user.get("gender") == "M" else "женщины"
+    goal = user.get("goal", "loss")
+
+    if goal == "gain":
+        goal_context = (
+            "Цель пользователя: НАБОР МАССЫ. "
+            "Мягко объясни, почему набор качественного веса (мышц, а не просто жира) требует времени и плавного профицита калорий. "
+            "Расскажи, почему мы не делаем огромный профицит (чтобы не заплыть жиром) и почему важно двигаться к цели постепенно."
+        )
+    else:
+        goal_context = (
+            "Цель пользователя: ПОХУДЕНИЕ или УДЕРЖАНИЕ. "
+            "Мягко объясни механику здорового похудения: почему плавный и комфортный дефицит калорий работает лучше, чем жесткие голодовки. "
+            "Расскажи, как правильный темп защищает от срывов, эффекта йо-йо (когда вес возвращается) и бережет здоровье."
+        )
+
+    prompt = (
+        f"Выступи в роли заботливого профи-нутрициолога. Пользователь ({gender_text}) "
+        f"спрашивает, почему его норма БЖУ именно такая ({user.get('protein')}г белков, {user.get('fat')}г жиров, {user.get('carbs')}г углеводов).\n\n"
+        "Твоя задача — понятно и логично объяснить:\n"
+        "1. Зачем нужно именно столько белка (сохранение мышц, сытость).\n"
+        "2. Зачем нужны жиры (гормональный фон, здоровье кожи/волос, почему их нельзя урезать).\n"
+        "3. Зачем нужны углеводы (энергия, работа мозга).\n"
+        f"4. {goal_context}\n\n"
+        "Пиши структурно, приветливо, как наставник. Используй HTML теги (<b>, <i>). ЗАПРЕЩЕНО использовать Markdown (* или #)."
+    )
+
+    try:
+        explanation = await ask_ai(prompt=prompt, model=AI_MODEL)
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Закрыть разбор", callback_data="delete_msg")]
+        ])
+        await wait_msg.edit_text(f"🧠 <b>Разбор твоей нормы от нутрициолога:</b>\n\n{explanation}", reply_markup=kb)
+    except Exception as e:
+        await wait_msg.edit_text("Не удалось сгенерировать ответ. Попробуй позже.")
 
 @dp.message(F.text == "😋 Вкусняшка")
 @dp.message(Command("treat"))
@@ -1288,9 +1338,6 @@ async def finish_onboarding(target_msg, state: FSMContext, user_id: int, allergy
     else:
         tu, pu, ca = eu.get("trial_until"), eu.get("premium_until"), eu.get("created_at", now.isoformat())
 
-    # Извлекаем метку из состояния (если есть)
-    utm_source = d.get("utm_source", "")
-
     ud = {
         "user_id": user_id, "gender": d["gender"], "age": d["age"], "height": d["height"], "weight": d["weight"], 
         "goal": d["goal"], "activity": d["activity"], "diet": d.get("diet", "all"), "family_mode": d.get("family_mode", "self"), 
@@ -1301,21 +1348,84 @@ async def finish_onboarding(target_msg, state: FSMContext, user_id: int, allergy
         "utm_source": d.get("utm_source", "organic"),
         "utm_medium": d.get("utm_medium", ""),
         "utm_campaign": d.get("utm_campaign", "")
-    }      
+    }       
     await save_user_profile(user_id, ud)
     await state.clear()
     
-    bonus = "🎁 <b>Активировано 30 дней бесплатно!</b>\nТеперь пришли фото еды 📸" if is_new else "✅ <b>Норма успешно обновлена!</b> 🥗"
+    bonus = "🎁 <b>Активировано 30 дней бесплатно!</b>" if is_new else "✅ <b>Норма успешно обновлена!</b> 🥗"
+    
+    # 1. Расчет сроков достижения цели
+    weight, target = d["weight"], tw
+    goal = d["goal"]
+    date_str, goal_text, weeks_str = "", "⚖️ Поддержание веса", ""
+    weeks = 0
+    if goal == "loss" and weight > target:
+        goal_text = "📉 Снижение веса"
+        weeks = (weight - target) / 0.6
+        date_str = (now_local() + timedelta(weeks=weeks)).strftime('%d.%m.%Y')
+        weeks_str = f"~{int(weeks)} нед."
+    elif goal == "gain" and target > weight:
+        goal_text = "📈 Набор массы"
+        weeks = (target - weight) / 0.4
+        date_str = (now_local() + timedelta(weeks=weeks)).strftime('%d.%m.%Y')
+        weeks_str = f"~{int(weeks)} нед."
+
     text = (
         "🎯 <b>Твоя норма рассчитана!</b>\n━━━━━━━━━━━━━━━━━━━━\n"
-        f"🎯 Цель: {tw} кг\n🔥 {norm['calories']} ккал | Б {norm['protein']}г | Ж {norm['fat']}г | У {norm['carbs']}г\n"
+        f"🎯 Цель: {tw} кг ({goal_text})\n"
+        f"🔥 {norm['calories']} ккал | Б {norm['protein']}г | Ж {norm['fat']}г | У {norm['carbs']}г\n"
         f"🛡 Аллергии: {allergy_text}\n👨‍👩‍👧‍👦 Режим семьи: {'Включен' if d.get('family_mode') == 'kids' else 'Выключен'}\n\n{bonus}"
     )
     
+    # 2. Мгновенно выдаем сухие цифры
     if is_cb:
         await target_msg.edit_text(text)
-        if is_new: await target_msg.answer("Готово! Жду фото.", reply_markup=main_menu)
-    else: await target_msg.answer(text, reply_markup=main_menu)
+    else: 
+        await target_msg.answer(text)
+
+    # 3. ИИ начинает печатать лекцию и прогноз
+    wait_msg = await target_msg.answer("⏳ <i>Анализирую твою цель и пишу персональный прогноз...</i>")
+    await bot.send_chat_action(chat_id=target_msg.chat.id, action="typing")
+
+    gender_text = "мужчины" if d["gender"] == "M" else "женщины"
+    
+    if goal == "gain" and weeks > 0:
+        goal_context = (
+            f"Цель: НАБОР МАССЫ до {target} кг. Расчетное время: {weeks_str} (примерно к {date_str}). "
+            "Объясни, почему набор качественного веса (мышц, а не просто жира) требует времени и плавного профицита калорий. "
+            "Расскажи, почему мы не делаем огромный профицит и почему постепенный темп — самый здоровый."
+        )
+    elif goal == "loss" and weeks > 0:
+        goal_context = (
+            f"Цель: ПОХУДЕНИЕ до {target} кг. Расчетное время: {weeks_str} (примерно к {date_str}). "
+            "Объясни механику здорового похудения: почему плавный дефицит калорий работает лучше, чем жесткие голодовки. "
+            "Расскажи, как такой темп защищает от срывов, сохраняет качество тела и бережет здоровье."
+        )
+    else:
+        goal_context = "Цель: УДЕРЖАНИЕ ВЕСА. Объясни, почему сбалансированное питание поможет сохранить форму, энергию и здоровье на долгие годы."
+
+    prompt = (
+        f"Выступи в роли заботливого профи-нутрициолога. Пользователь ({gender_text}) "
+        f"получил свою норму: {norm['protein']}г белков, {norm['fat']}г жиров, {norm['carbs']}г углеводов.\n\n"
+        "Твоя задача — понятно, поддерживающе и логично объяснить:\n"
+        "1. Зачем нужно именно столько белка (сохранение мышц, сытость).\n"
+        "2. Зачем нужны жиры (гормональный фон, здоровье кожи/волос, почему их нельзя урезать).\n"
+        "3. Зачем нужны углеводы (энергия, работа мозга).\n"
+        f"4. Прокомментируй сроки: {goal_context}\n\n"
+        "Пиши структурно, как наставник. Используй HTML теги (<b>, <i>). ЗАПРЕЩЕНО использовать Markdown (* или #)."
+    )
+
+    try:
+        explanation = await ask_ai(prompt=prompt, model=AI_MODEL)
+        await wait_msg.edit_text(f"🧠 <b>Почему такие цифры и сроки:</b>\n\n{explanation}")
+    except Exception:
+        await wait_msg.delete()
+
+    # 4. Выводим клавиатуру и призыв к действию
+    if is_new:
+        await target_msg.answer("Всё готово! Жду твоё первое фото еды 📸", reply_markup=main_menu)
+    else:
+        await target_msg.answer("Твой профиль и норма успешно обновлены! 🥗", reply_markup=main_menu)
 
 # =========================================================
 # РЕДАКТИРОВАНИЕ И ТРЕКЕРЫ
