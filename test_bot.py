@@ -370,7 +370,7 @@ async def test_bepaid_webhook_fraud_protection():
 @pytest.mark.asyncio
 async def test_finish_onboarding_30_days(mock_message, mock_state):
     from main import finish_onboarding
-    from unittest.mock import patch, MagicMock
+    from unittest.mock import patch, MagicMock, AsyncMock
     
     mock_state.get_data = AsyncMock(return_value={
         "gender": "F", "age": 25, "height": 165, "weight": 60, "goal": "loss", "activity": "low"
@@ -381,15 +381,17 @@ async def test_finish_onboarding_30_days(mock_message, mock_state):
     mock_doc.exists = False
     mock_db.collection.return_value.document.return_value.get = MagicMock(return_value=mock_doc)
     
+    # 👇 ИСПРАВЛЕНИЕ: Добавили заглушки для Telegram (send_chat_action) и Нейросети (ask_ai)
     with patch("main.db", mock_db), \
-         patch("main.calculate_norm", return_value={"calories": 1500, "protein": 100, "fat": 50, "carbs": 150}):
+         patch("main.calculate_norm", return_value={"calories": 1500, "protein": 100, "fat": 50, "carbs": 150}), \
+         patch("main.bot.send_chat_action", new_callable=AsyncMock), \
+         patch("main.ask_ai", new_callable=AsyncMock, return_value="Тестовое объяснение"):
          
         await finish_onboarding(mock_message, mock_state, user_id=12345, allergy_text="Нет", is_cb=False)
         
         # Проверяем самое первое отправленное сообщение (в нем лежат цифры и бонус)
         args, kwargs = mock_message.answer.call_args_list[0]
         assert "Активировано 30 дней бесплатно!" in args[0]
-
 @pytest.mark.asyncio
 async def test_analyze_today_handler(mock_callback):
     from main import analyze_today_handler
