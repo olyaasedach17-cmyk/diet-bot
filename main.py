@@ -1503,10 +1503,21 @@ async def send_evening_digest():
         u = doc.to_dict()
         diary = await asyncio.to_thread(db.collection('diaries').document(f"{uid}_{today_str()}").get)
         if not diary.exists or not diary.to_dict().get('meals'): continue
+        
         m = diary.to_dict().get('meals', [])
-        prompt = f"Оцени день: съедено {sum(x.get('calories',0) for x in m)}/{u.get('calories', 2000)} ккал. Напиши теплый разбор. Используй HTML."
-        try: await bot.send_message(chat_id=int(uid), text=f"🌙 <b>Итоги дня</b>\n━━━━━━━━━\n{clean_html_tags(await ask_ai(prompt=prompt, model=AI_MODEL))}")
-        except Exception: pass
+        gender_text = "мужчины" if u.get("gender") == "M" else "девушки"
+        
+        prompt = (
+            f"Пользователь ({gender_text}). Оцени день: съедено {sum(x.get('calories',0) for x in m)}/{u.get('calories', 2000)} ккал. "
+            "Напиши теплый разбор. "
+            "КРИТИЧЕСКИ ВАЖНО: Обращайся к пользователю в правильном роде! Если это мужчина, пиши 'ты съел', 'ты справился'. Если девушка — 'ты съела'. "
+            "Используй HTML."
+        )
+        
+        try: 
+            await bot.send_message(chat_id=int(uid), text=f"🌙 <b>Итоги дня</b>\n━━━━━━━━━\n{clean_html_tags(await ask_ai(prompt=prompt, model=AI_MODEL))}")
+        except Exception: 
+            pass
 
 # =========================================================
 # УМНЫЙ ИИ (ГОЛОС И ТЕКСТ) — ЖИВОЕ МЫШЛЕНИЕ
