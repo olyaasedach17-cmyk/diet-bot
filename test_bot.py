@@ -386,9 +386,9 @@ async def test_finish_onboarding_30_days(mock_message, mock_state):
          
         await finish_onboarding(mock_message, mock_state, user_id=12345, allergy_text="Нет", is_cb=False)
         
-        args, kwargs = mock_message.answer.call_args
+        # Проверяем самое первое отправленное сообщение (в нем лежат цифры и бонус)
+        args, kwargs = mock_message.answer.call_args_list[0]
         assert "Активировано 30 дней бесплатно!" in args[0]
-
 
 @pytest.mark.asyncio
 async def test_analyze_today_handler(mock_callback):
