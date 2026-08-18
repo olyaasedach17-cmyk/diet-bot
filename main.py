@@ -1800,6 +1800,37 @@ async def bepaid_webhook_handler(request: web.Request):
     except Exception as e:
         logger.error(f"Критическая ошибка Webhook: {e}")
         return web.Response(text="OK", status=200)
+# =========================================================
+# СКРЫТЫЙ РАЗДЕЛ: ЮРИДИЧЕСКИЕ ДОКУМЕНТЫ (ПО КОМАНДЕ /docs)
+# =========================================================
+@dp.message(Command("docs"))
+async def docs_handler(message: Message):
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📄 Публичная оферта", url="https://telegra.ph/Publichnaya-oferta-08-16-4")],
+        [InlineKeyboardButton(text="🔒 Политика конфиденциальности", url="https://telegra.ph/Politika-obrabotki-personalnyh-dannyh-08-16-4")],
+        [InlineKeyboardButton(text="💳 Правила возврата", url="https://telegra.ph/Pravila-vozvrata-denezhnyh-sredstv-08-16")],
+        [InlineKeyboardButton(text="🏛 Реквизиты", callback_data="show_requisites")]
+    ])
+    await message.answer(
+        "⚖️ <b>Правовая информация и реквизиты сервиса:</b>\n\n"
+        "Официальные документы и условия оказания информационных услуг.",
+        reply_markup=kb
+    )
+
+@dp.callback_query(F.data == "show_requisites")
+async def requisites_callback(callback: CallbackQuery):
+    await callback.message.answer(
+        "🏛 <b>РЕКВИЗИТЫ ПРОДАВЦА</b>\n━━━━━━━━━━━━━━━━━━━━\n"
+        "<b>Исполнитель:</b> Семижон Ольга Николаевна\n"
+        "<b>Статус:</b> Плательщик налога на профессиональный доход (НПД)\n"
+        "<b>УНП:</b> KE8832478\n"
+        "<b>Адрес регистрации:</b> г. Минск, ул. Уручская, д. 6Б, кв. 127\n"
+        "<b>ИМНС:</b> 107 Инспекция МНС по Первомайскому району г. Минска\n"
+        "<b>E-mail:</b> olyaasedach@icloud.com\n"
+        "<b>Телефон:</b> +375 (44) 724-97-47\n"
+        "<b>Режим работы поддержки:</b> Пн–Вс, 09:00–21:00"
+    )
+    await callback.answer()
 
 async def main():
     # 1. ЗАПУСКАЕМ ВЕБ-СЕРВЕР (ЧТОБЫ RENDER НЕ РУГАЛСЯ)
