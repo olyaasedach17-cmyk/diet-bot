@@ -257,6 +257,7 @@ async def set_bot_commands(bot_instance: Bot):
         BotCommand(command="profile", description="👤 Профиль"),
         BotCommand(command="plan", description="🎯 Моя норма"),
         BotCommand(command="help", description="❓ Помощь"),
+        BotCommand(command="docs", description="⚖️ Документы и реквизиты"), # 👈 ДОБАВИЛИ СЮДА
     ]
     try: await bot_instance.set_my_commands(commands)
     except Exception: pass
